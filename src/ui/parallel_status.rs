@@ -103,6 +103,12 @@ pub struct ParallelExecutionState {
     pub stories: Vec<StoryExecutionState>,
     /// Whether the completed section is collapsed
     pub completed_collapsed: bool,
+    /// Queue size for pending work
+    pub queue_size: usize,
+    /// Queue capacity for pending work
+    pub queue_capacity: usize,
+    /// Queue policy label
+    pub queue_policy: String,
 }
 
 impl ParallelExecutionState {
@@ -114,6 +120,9 @@ impl ParallelExecutionState {
             worker_count,
             stories: Vec::new(),
             completed_collapsed: true,
+            queue_size: 0,
+            queue_capacity: 0,
+            queue_policy: "unknown".to_string(),
         }
     }
 
@@ -378,10 +387,14 @@ impl ParallelStatusRenderer {
         let completed = state.completed_count();
         let pending = state.pending_count();
         let failed = state.failed_count();
+        let queue_info = format!(
+            "queue {}/{} ({})",
+            state.queue_size, state.queue_capacity, state.queue_policy
+        );
 
         if self.colors_enabled {
             format!(
-                "{} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {}",
                 format!("{}:", StoryStatus::InProgress.icon())
                     .color(self.theme.in_progress)
                     .bold(),
@@ -401,11 +414,12 @@ impl ParallelStatusRenderer {
                     failed.to_string().color(self.theme.error).to_string()
                 } else {
                     failed.to_string().color(self.theme.muted).to_string()
-                }
+                },
+                queue_info.color(self.theme.muted)
             )
         } else {
             format!(
-                "{}: {} {}: {} {}: {} {}: {}",
+                "{}: {} {}: {} {}: {} {}: {} {}",
                 StoryStatus::InProgress.icon(),
                 running,
                 StoryStatus::Completed.icon(),
@@ -413,7 +427,8 @@ impl ParallelStatusRenderer {
                 StoryStatus::Pending.icon(),
                 pending,
                 StoryStatus::Failed.icon(),
-                failed
+                failed,
+                queue_info
             )
         }
     }

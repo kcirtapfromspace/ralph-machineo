@@ -138,6 +138,31 @@ cat $(ralph --home)/skills/ralph/SKILL.md | claude --print "Convert this PRD to 
 ralph              # Run with defaults (10 iterations)
 ralph 20           # Run with 20 max iterations
 ralph -d ./other   # Run in different directory
+ralph --parallel --parallel-queue-capacity 64 --parallel-queue-policy drop_oldest
+```
+
+Backpressure controls:
+
+```bash
+# MCP server queue size (default 32)
+RALPH_QUEUE_SIZE=64 ralph mcp-server
+
+# Parallel runner queue controls
+ralph --parallel \
+  --parallel-queue-capacity 64 \
+  --parallel-queue-policy block
+
+# Environment overrides for parallel queue
+RALPH_PARALLEL_QUEUE_CAPACITY=64 \
+RALPH_PARALLEL_QUEUE_POLICY=drop_oldest \
+ralph --parallel
+```
+
+MCP queue status:
+
+```bash
+# Query the MCP tool for queue depth and ETA heuristics
+get_queue_status
 ```
 
 Ralph will:
