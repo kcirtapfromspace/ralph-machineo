@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{Duration, Utc};
@@ -90,6 +90,46 @@ impl EvidenceStore {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(EvidenceError::Io(err)),
         }
+    }
+
+    /// Load metadata for a specific run.
+    pub fn load_metadata(&self, run_id: &str) -> EvidenceResult<Option<EvidenceRunMetadata>> {
+        if run_id.trim().is_empty() {
+            return Err(EvidenceError::InvalidRunId);
+        }
+
+        let run_dir = self.run_dir(run_id);
+        let manifest_path = run_dir.join(MANIFEST_FILE_NAME);
+        self.read_metadata(&manifest_path)
+    }
+
+    /// Load all evidence records for a specific run.
+    pub fn load_events(&self, run_id: &str) -> EvidenceResult<Vec<EvidenceRecord>> {
+        if run_id.trim().is_empty() {
+            return Err(EvidenceError::InvalidRunId);
+        }
+
+        let run_dir = self.run_dir(run_id);
+        let events_path = run_dir.join(EVENTS_FILE_NAME);
+        let file = match fs::File::open(&events_path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(EvidenceError::Io(err)),
+        };
+
+        let reader = io::BufReader::new(file);
+        let mut records = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let record = serde_json::from_str(line)?;
+            records.push(record);
+        }
+
+        Ok(records)
     }
 
     /// Apply retention rules and delete expired runs.
