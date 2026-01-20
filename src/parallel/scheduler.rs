@@ -1,6 +1,6 @@
 //! Parallel execution scheduler
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,12 +31,29 @@ pub enum ConflictStrategy {
     None,
 }
 
+/// How to handle backpressure when the parallel queue is full.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueuePolicy {
+    /// Wait for queue capacity to free up.
+    Block,
+    /// Reject new stories when the queue is full.
+    Reject,
+    /// Drop the oldest queued story to make room.
+    DropOldest,
+}
+
 /// Configuration options for parallel story execution.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ParallelRunnerConfig {
     /// Maximum number of stories to execute concurrently.
     pub max_concurrency: u32,
+    /// Maximum number of stories allowed in the pending queue.
+    pub queue_capacity: usize,
+    /// Backpressure policy when the queue is full.
+    pub queue_policy: QueuePolicy,
+    /// Wait duration between queue capacity checks when blocking.
+    pub queue_wait: Duration,
     /// Whether to automatically infer dependencies from file patterns.
     pub infer_dependencies: bool,
     /// Whether to fall back to sequential execution on errors.
@@ -55,6 +72,9 @@ impl Default for ParallelRunnerConfig {
     fn default() -> Self {
         Self {
             max_concurrency: 3,
+            queue_capacity: 32,
+            queue_policy: QueuePolicy::Block,
+            queue_wait: Duration::from_millis(200),
             infer_dependencies: true,
             fallback_to_sequential: true,
             conflict_strategy: ConflictStrategy::default(),
@@ -457,6 +477,8 @@ impl ParallelRunner {
             .collect();
 
         // Main execution loop
+        let mut pending_queue: VecDeque<StoryNode> = VecDeque::new();
+        let mut queued_ids: HashSet<String> = HashSet::new();
         loop {
             // Get current state snapshot
             let state = self.execution_state.read().await;
@@ -469,7 +491,7 @@ impl ParallelRunner {
             let ready_stories: Vec<_> = graph
                 .get_ready_stories(&completed)
                 .into_iter()
-                .filter(|s| !in_flight.contains(&s.id))
+                .filter(|s| !in_flight.contains(&s.id) && !queued_ids.contains(&s.id))
                 .cloned()
                 .collect();
 
@@ -507,6 +529,61 @@ impl ParallelRunner {
                 }
             }
 
+            // Enqueue ready stories with backpressure handling
+            let mut blocked_on_queue = false;
+            for story in ready_stories {
+                if pending_queue.len() >= self.config.queue_capacity {
+                    match self.config.queue_policy {
+                        QueuePolicy::Block => {
+                            blocked_on_queue = true;
+                            break;
+                        }
+                        QueuePolicy::Reject => {
+                            let mut state = self.execution_state.write().await;
+                            state.failed.insert(
+                                story.id.clone(),
+                                "Queue full - rejected by backpressure policy".to_string(),
+                            );
+                            if let Some(ref sender) = ui_sender {
+                                let event = ParallelUIEvent::StoryFailed {
+                                    story_id: story.id.clone(),
+                                    error: "Queue full - rejected".to_string(),
+                                    iteration: 0,
+                                };
+                                let _ = sender.try_send(event);
+                            }
+                            continue;
+                        }
+                        QueuePolicy::DropOldest => {
+                            if let Some(dropped) = pending_queue.pop_front() {
+                                queued_ids.remove(&dropped.id);
+                                let mut state = self.execution_state.write().await;
+                                state.failed.insert(
+                                    dropped.id.clone(),
+                                    "Queue full - dropped oldest".to_string(),
+                                );
+                                if let Some(ref sender) = ui_sender {
+                                    let event = ParallelUIEvent::StoryFailed {
+                                        story_id: dropped.id.clone(),
+                                        error: "Queue full - dropped oldest".to_string(),
+                                        iteration: 0,
+                                    };
+                                    let _ = sender.try_send(event);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                queued_ids.insert(story.id.clone());
+                pending_queue.push_back(story);
+            }
+
+            if blocked_on_queue {
+                tokio::time::sleep(self.config.queue_wait).await;
+                continue;
+            }
+
             // Check if we're done or stuck
             if ready_stories.is_empty() && in_flight.is_empty() {
                 // No more stories to run and none in flight
@@ -528,46 +605,56 @@ impl ParallelRunner {
                 };
             }
 
-            // If no ready stories but some in flight, wait for them
-            if ready_stories.is_empty() {
+            // If nothing queued and some in flight, wait for them
+            if pending_queue.is_empty() && !in_flight.is_empty() {
                 // Wait for any in-flight task to complete
                 tokio::task::yield_now().await;
                 continue;
             }
+            if pending_queue.is_empty() {
+                tokio::task::yield_now().await;
+                continue;
+            }
 
-            // Spawn tasks for ready stories (up to available semaphore permits)
+            if self.semaphore.available_permits() == 0 {
+                tokio::time::sleep(self.config.queue_wait).await;
+                continue;
+            }
+
+            // Spawn tasks for queued stories (up to available semaphore permits)
             let mut handles = Vec::new();
+            let mut dispatch_slots = self.semaphore.available_permits();
 
-            // Count concurrent stories for event reporting
-            let concurrent_count = {
-                let state = self.execution_state.read().await;
-                state.in_flight.len()
-                    + ready_stories
-                        .len()
-                        .min(self.config.max_concurrency as usize)
-            };
+            while dispatch_slots > 0 {
+                let story = match pending_queue.pop_front() {
+                    Some(story) => story,
+                    None => break,
+                };
+                queued_ids.remove(&story.id);
 
-            for story in ready_stories {
                 let story_id = story.id.clone();
                 let target_files = story.target_files.clone();
 
-                // Try to acquire semaphore permit
-                let permit = match self.semaphore.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => break, // No more permits available
-                };
+                let permit = self.semaphore.clone().acquire_owned().await;
 
-                // Try to acquire file locks; skip this story if files are locked
+                // Try to acquire file locks; requeue if files are locked
                 {
                     let mut state = self.execution_state.write().await;
                     if !state.acquire_locks(&story_id, &target_files) {
-                        // Files are locked by another story, skip for now
-                        drop(permit); // Release the semaphore permit
+                        drop(permit);
+                        pending_queue.push_back(story);
+                        queued_ids.insert(story_id.clone());
+                        dispatch_slots = dispatch_slots.saturating_sub(1);
                         continue;
                     }
                     // Mark story as in-flight
                     state.in_flight.insert(story_id.clone());
                 }
+
+                let concurrent_count = {
+                    let state = self.execution_state.read().await;
+                    state.in_flight.len()
+                };
 
                 // Clone values for the spawned task
                 let executor_config = ExecutorConfig {
@@ -684,6 +771,7 @@ impl ParallelRunner {
                 });
 
                 handles.push(handle);
+                dispatch_slots = dispatch_slots.saturating_sub(1);
             }
 
             // Wait for all tasks in this batch to complete (with timeout)

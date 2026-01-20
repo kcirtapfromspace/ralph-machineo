@@ -20,6 +20,7 @@ use crate::mcp::tools::audit::{
     StartAuditError, StartAuditRequest,
 };
 use crate::mcp::tools::executor::{detect_agent, ExecutorConfig, StoryExecutor};
+use crate::mcp::tools::get_queue_status::{GetQueueStatusRequest, GetQueueStatusResponse};
 use crate::mcp::tools::get_status::{GetStatusRequest, GetStatusResponse};
 use crate::mcp::tools::list_stories::{load_stories, ListStoriesRequest, ListStoriesResponse};
 use crate::mcp::tools::load_prd::{
@@ -126,6 +127,8 @@ pub struct ServerState {
     pub audit_states: HashMap<String, AuditState>,
     /// Pending story executions waiting for a slot
     pub run_queue: VecDeque<QueuedRun>,
+    /// Recent execution durations (seconds) for ETA estimates
+    pub recent_durations: VecDeque<u64>,
 }
 
 impl Default for ServerState {
@@ -135,6 +138,7 @@ impl Default for ServerState {
             execution_state: ExecutionState::Idle,
             audit_states: HashMap::new(),
             run_queue: VecDeque::new(),
+            recent_durations: VecDeque::new(),
         }
     }
 }
@@ -248,6 +252,7 @@ impl RalphMcpServer {
                 execution_state: ExecutionState::Idle,
                 audit_states: HashMap::new(),
                 run_queue: VecDeque::new(),
+                recent_durations: VecDeque::new(),
             })),
             config: Arc::new(None),
             queue_capacity: Self::queue_capacity_from_env(),
@@ -351,6 +356,7 @@ impl RalphMcpServer {
                 execution_state: ExecutionState::Idle,
                 audit_states: HashMap::new(),
                 run_queue: VecDeque::new(),
+                recent_durations: VecDeque::new(),
             })),
             config: Arc::new(None),
             queue_capacity: Self::queue_capacity_from_env(),
@@ -507,8 +513,30 @@ impl RalphMcpServer {
                 .await
             {
                 Ok(result) => {
+                    let duration_secs = {
+                        let now = current_timestamp();
+                        let started_at = {
+                            let server_state = state.read().await;
+                            match &server_state.execution_state {
+                                ExecutionState::Running { story_id: running_id, started_at, .. }
+                                    if running_id == &story_id =>
+                                {
+                                    Some(*started_at)
+                                }
+                                _ => None,
+                            }
+                        };
+                        started_at.map(|start| now.saturating_sub(start))
+                    };
+
                     // Update state to Completed
                     let mut server_state = state.write().await;
+                    if let Some(duration) = duration_secs {
+                        server_state.recent_durations.push_back(duration);
+                        if server_state.recent_durations.len() > 10 {
+                            server_state.recent_durations.pop_front();
+                        }
+                    }
                     server_state.execution_state = ExecutionState::Completed {
                         story_id: story_id.clone(),
                         commit_hash: result.commit_hash,
@@ -738,6 +766,64 @@ impl RalphMcpServer {
         let response = GetStatusResponse::from_execution_state(&execution_state);
 
         // Serialize to JSON
+        serde_json::to_string_pretty(&response)
+            .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize response: {}\"}}", e))
+    }
+
+    /// Get the current MCP execution queue status.
+    ///
+    /// Returns queue depth, capacity, and ETA heuristics based on recent runs.
+    #[tool(
+        name = "get_queue_status",
+        description = "Get MCP execution queue depth, capacity, running story, and ETA heuristics."
+    )]
+    pub async fn get_queue_status(
+        &self,
+        Parameters(_req): Parameters<GetQueueStatusRequest>,
+    ) -> String {
+        let (queue_size, queue_capacity, execution_state, recent_durations) = {
+            let state = self.state.read().await;
+            (
+                state.run_queue.len(),
+                self.queue_capacity,
+                state.execution_state.clone(),
+                state.recent_durations.clone(),
+            )
+        };
+
+        let now = current_timestamp();
+        let (running_story_id, running_started_at, running_elapsed_secs) = match execution_state {
+            ExecutionState::Running { story_id, started_at, .. } => {
+                let elapsed = now.saturating_sub(started_at);
+                (Some(story_id), Some(started_at), Some(elapsed))
+            }
+            _ => (None, None, None),
+        };
+
+        let average_duration_secs = if recent_durations.is_empty() {
+            None
+        } else {
+            let sum: u64 = recent_durations.iter().sum();
+            Some(sum / recent_durations.len() as u64)
+        };
+
+        let estimated_wait_secs = average_duration_secs.map(|avg| {
+            let running_remaining = running_elapsed_secs
+                .map(|elapsed| avg.saturating_sub(elapsed))
+                .unwrap_or(0);
+            running_remaining + avg * queue_size as u64
+        });
+
+        let response = GetQueueStatusResponse {
+            queue_size,
+            queue_capacity,
+            running_story_id,
+            running_started_at,
+            running_elapsed_secs,
+            average_duration_secs,
+            estimated_wait_secs,
+        };
+
         serde_json::to_string_pretty(&response)
             .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize response: {}\"}}", e))
     }
@@ -1729,6 +1815,20 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(json["state"], "idle");
         assert!(json.get("story_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_queue_status_empty() {
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let server = RalphMcpServer::new();
+        let result = server
+            .get_queue_status(Parameters(GetQueueStatusRequest {}))
+            .await;
+
+        let json: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(json["queue_size"], 0);
+        assert!(json["queue_capacity"].as_u64().unwrap_or(0) > 0);
     }
 
     #[tokio::test]
