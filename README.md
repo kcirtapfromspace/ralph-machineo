@@ -150,6 +150,17 @@ ralph -d ./other   # Run in different directory
 ralph --parallel --parallel-queue-capacity 64 --parallel-queue-policy drop_oldest
 ```
 
+Autonomous mode (skip checkpoint prompts and auto-resume when possible):
+
+```bash
+RALPH_AUTONOMOUS=1 ralph
+RALPH_AUTONOMOUS=1 ralph --parallel
+```
+
+`--agent codex` also enables autonomous mode automatically.
+
+Codex runs with `--dangerously-bypass-approvals-and-sandbox` when selected.
+
 Backpressure controls:
 
 ```bash
