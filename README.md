@@ -159,7 +159,11 @@ RALPH_AUTONOMOUS=1 ralph --parallel
 
 `--agent codex` also enables autonomous mode automatically.
 
-Codex runs with `--dangerously-bypass-approvals-and-sandbox` when selected.
+To allow Codex to bypass approvals and sandboxing, set:
+
+```bash
+RALPH_CODEX_DANGEROUS=1 ralph --agent codex
+```
 
 Backpressure controls:
 
