@@ -540,6 +540,13 @@ fn find_prd_file(default_path: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
+fn env_var_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 /// Run stories from the PRD until all pass
 #[allow(clippy::too_many_arguments)]
 async fn run_stories(
@@ -557,6 +564,7 @@ async fn run_stories(
     no_checkpoint: bool,
     agent: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use ralphmacchio::mcp::tools::executor::detect_agent;
     use ralphmacchio::parallel::scheduler::ParallelRunnerConfig;
     use ralphmacchio::parallel::scheduler::QueuePolicy;
 
@@ -588,6 +596,18 @@ async fn run_stories(
         queue_capacity: env_queue_capacity.unwrap_or(parallel_queue_capacity).max(1),
         queue_policy,
         ..Default::default()
+    };
+
+    let resolved_agent = agent.clone().or_else(detect_agent);
+    let codex_autonomous = resolved_agent
+        .as_deref()
+        .map(|value| value.contains("codex"))
+        .unwrap_or(false);
+    let env_autonomous = env_var_truthy("RALPH_AUTONOMOUS") || codex_autonomous;
+    let (resume, no_resume) = if !resume && !no_resume && env_autonomous {
+        (true, false)
+    } else {
+        (resume, no_resume)
     };
 
     let config = RunnerConfig {
