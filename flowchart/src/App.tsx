@@ -38,16 +38,19 @@ const allSteps: { id: string; label: string; description: string; phase: Phase }
   // Setup phase (vertical)
   { id: '1', label: 'You write a PRD', description: 'Define what you want to build', phase: 'setup' },
   { id: '2', label: 'Convert to prd.json', description: 'Break into small user stories', phase: 'setup' },
-  { id: '3', label: 'Run ralph.sh', description: 'Starts the autonomous loop', phase: 'setup' },
+  { id: '3', label: 'Start Ralph (CLI or MCP)', description: 'Boot the loop or server', phase: 'setup' },
   // Loop phase
-  { id: '4', label: 'Amp picks a story', description: 'Finds next passes: false', phase: 'loop' },
-  { id: '5', label: 'Implements it', description: 'Writes code, runs tests', phase: 'loop' },
-  { id: '6', label: 'Commits changes', description: 'If tests pass', phase: 'loop' },
-  { id: '7', label: 'Updates prd.json', description: 'Sets passes: true', phase: 'loop' },
-  { id: '8', label: 'Logs to progress.txt', description: 'Saves learnings', phase: 'loop' },
-  { id: '9', label: 'More stories?', description: '', phase: 'decision' },
+  { id: '4', label: 'MCP server receives request', description: 'Client triggers the run', phase: 'loop' },
+  { id: '5', label: 'Scheduler selects batch', description: 'Picks next passes: false', phase: 'loop' },
+  { id: '6', label: 'Parallel workers implement', description: 'Executes stories in parallel', phase: 'loop' },
+  { id: '7', label: 'Reconcile changes', description: 'Merge/resolve outputs', phase: 'loop' },
+  { id: '8', label: 'Run quality checks', description: 'Typecheck, tests, lint', phase: 'loop' },
+  { id: '9', label: 'Commit changes', description: 'If checks pass', phase: 'loop' },
+  { id: '10', label: 'Update prd.json', description: 'Sets passes: true', phase: 'loop' },
+  { id: '11', label: 'Log to progress.txt', description: 'Saves learnings', phase: 'loop' },
+  { id: '12', label: 'More stories?', description: '', phase: 'decision' },
   // Exit
-  { id: '10', label: 'Done!', description: 'All stories complete', phase: 'done' },
+  { id: '13', label: 'Done!', description: 'All stories complete', phase: 'done' },
 ];
 
 const notes = [
@@ -69,12 +72,12 @@ const notes = [
   },
   {
     id: 'note-2',
-    appearsWithStep: 8,
-    position: { x: 480, y: 620 },
+    appearsWithStep: 11,
+    position: { x: 520, y: 720 },
     color: { bg: '#fdf4f0', border: '#c97a50' },
-    content: `Also updates AGENTS.md with
-patterns discovered, so future
-iterations learn from this one.`,
+    content: `Parallel runs update AGENTS.md
+with patterns discovered, so
+future iterations learn faster.`,
   },
 ];
 
@@ -126,14 +129,17 @@ const positions: { [key: string]: { x: number; y: number } } = {
   '2': { x: 80, y: 130 },
   '3': { x: 60, y: 250 },
   // Loop
-  '4': { x: 40, y: 420 },
-  '5': { x: 450, y: 300 },
-  '6': { x: 750, y: 450 },
-  '7': { x: 470, y: 520 },
-  '8': { x: 200, y: 620 },
-  '9': { x: 40, y: 720 },
+  '4': { x: 300, y: 260 },
+  '5': { x: 560, y: 260 },
+  '6': { x: 860, y: 340 },
+  '7': { x: 860, y: 500 },
+  '8': { x: 560, y: 560 },
+  '9': { x: 300, y: 560 },
+  '10': { x: 140, y: 640 },
+  '11': { x: 60, y: 740 },
+  '12': { x: 90, y: 840 },
   // Exit
-  '10': { x: 350, y: 880 },
+  '13': { x: 360, y: 980 },
   // Notes
   ...Object.fromEntries(notes.map(n => [n.id, n.position])),
 };
@@ -145,13 +151,16 @@ const edgeConnections: { source: string; target: string; sourceHandle?: string; 
   { source: '3', target: '4', sourceHandle: 'bottom', targetHandle: 'top' },
   // Loop phase
   { source: '4', target: '5', sourceHandle: 'right', targetHandle: 'left' },
-  { source: '5', target: '6', sourceHandle: 'right', targetHandle: 'top' },
-  { source: '6', target: '7', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '7', target: '8', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '8', target: '9', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '9', target: '4', sourceHandle: 'top-source', targetHandle: 'bottom-target', label: 'Yes' },
+  { source: '5', target: '6', sourceHandle: 'right', targetHandle: 'left' },
+  { source: '6', target: '7', sourceHandle: 'bottom', targetHandle: 'top' },
+  { source: '7', target: '8', sourceHandle: 'left', targetHandle: 'right' },
+  { source: '8', target: '9', sourceHandle: 'left', targetHandle: 'right' },
+  { source: '9', target: '10', sourceHandle: 'left', targetHandle: 'right' },
+  { source: '10', target: '11', sourceHandle: 'left', targetHandle: 'right' },
+  { source: '11', target: '12', sourceHandle: 'bottom', targetHandle: 'top' },
+  { source: '12', target: '5', sourceHandle: 'top-source', targetHandle: 'bottom-target', label: 'Yes' },
   // Exit
-  { source: '9', target: '10', sourceHandle: 'bottom', targetHandle: 'top', label: 'No' },
+  { source: '12', target: '13', sourceHandle: 'bottom', targetHandle: 'top', label: 'No' },
 ];
 
 function createNode(step: typeof allSteps[0], visible: boolean, position?: { x: number; y: number }): Node {
@@ -325,8 +334,8 @@ function App() {
   return (
     <div className="app-container">
       <div className="header">
-        <h1>How Ralph Works with Amp</h1>
-        <p>Autonomous AI agent loop for completing PRDs</p>
+        <h1>How Ralph Works (Parallel + MCP)</h1>
+        <p>Autonomous loop with MCP entrypoint and parallel story execution</p>
       </div>
       <div className="flow-container">
         <ReactFlow
