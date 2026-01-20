@@ -1,7 +1,7 @@
 class Ralph < Formula
   desc "Autonomous AI agent loop using Claude Code"
-  homepage "https://github.com/kcirtapfromspace/ralph"
-  head "https://github.com/kcirtapfromspace/ralph.git", branch: "main"
+  homepage "https://github.com/kcirtapfromspace/ralph-machineo"
+  head "https://github.com/kcirtapfromspace/ralph-machineo.git", branch: "main"
   license "MIT"
 
   depends_on "jq"
@@ -21,7 +21,7 @@ class Ralph < Formula
         ralph --init    # Create prd.json template
         ralph           # Run the agent loop
 
-      Docs: https://github.com/kcirtapfromspace/ralph
+      Docs: https://github.com/kcirtapfromspace/ralph-machineo
     EOS
   end
 

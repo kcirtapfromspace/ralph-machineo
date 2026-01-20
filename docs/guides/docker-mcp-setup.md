@@ -45,7 +45,7 @@ The fastest way to get Ralph running with Claude Desktop:
 
 1. **Pull the Ralph Docker image:**
    ```bash
-   docker pull ghcr.io/kcirtapfromspace/ralph:latest
+   docker pull ghcr.io/kcirtapfromspace/ralph-machineo:latest
    ```
 
 2. **Add Ralph to Claude Desktop config:**
@@ -65,7 +65,7 @@ The fastest way to get Ralph running with Claude Desktop:
            "run",
            "-i",
            "--rm",
-           "ghcr.io/kcirtapfromspace/ralph:latest"
+           "ghcr.io/kcirtapfromspace/ralph-machineo:latest"
          ],
          "env": {
            "RUST_LOG": "info"
@@ -84,13 +84,13 @@ The fastest way to get Ralph running with Claude Desktop:
 
 ```bash
 # Pull the latest stable image
-docker pull ghcr.io/kcirtapfromspace/ralph:latest
+docker pull ghcr.io/kcirtapfromspace/ralph-machineo:latest
 
 # Or pull a specific version
-docker pull ghcr.io/kcirtapfromspace/ralph:v1.0.0
+docker pull ghcr.io/kcirtapfromspace/ralph-machineo:v1.0.0
 
 # Verify the image
-docker images ghcr.io/kcirtapfromspace/ralph
+docker images ghcr.io/kcirtapfromspace/ralph-machineo
 ```
 
 ### Step 2: Test Ralph Locally
@@ -99,11 +99,11 @@ Before configuring Claude Desktop, verify Ralph works:
 
 ```bash
 # Run Ralph and check it starts correctly
-docker run --rm ghcr.io/kcirtapfromspace/ralph:latest --help
+docker run --rm ghcr.io/kcirtapfromspace/ralph-machineo:latest --help
 
 # Test the MCP server mode (will wait for input)
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
-  docker run -i --rm ghcr.io/kcirtapfromspace/ralph:latest
+  docker run -i --rm ghcr.io/kcirtapfromspace/ralph-machineo:latest
 ```
 
 ### Step 3: Configure Claude Desktop
@@ -141,7 +141,7 @@ Add Ralph to your configuration. If you have an existing file, merge the `mcpSer
         "run",
         "-i",
         "--rm",
-        "ghcr.io/kcirtapfromspace/ralph:latest"
+        "ghcr.io/kcirtapfromspace/ralph-machineo:latest"
       ],
       "env": {
         "RUST_LOG": "info"
@@ -167,7 +167,7 @@ The minimal configuration to run Ralph:
   "mcpServers": {
     "ralph": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "ghcr.io/kcirtapfromspace/ralph:latest"],
+      "args": ["run", "-i", "--rm", "ghcr.io/kcirtapfromspace/ralph-machineo:latest"],
       "transport": "stdio"
     }
   }
@@ -188,7 +188,7 @@ Mount a PRD file from your host machine:
         "-i",
         "--rm",
         "-v", "/path/to/your/prd.json:/app/prd.json:ro",
-        "ghcr.io/kcirtapfromspace/ralph:latest",
+        "ghcr.io/kcirtapfromspace/ralph-machineo:latest",
         "--prd", "/app/prd.json"
       ],
       "env": {
@@ -214,7 +214,7 @@ Enable verbose logging for debugging:
         "-i",
         "--rm",
         "-e", "RUST_LOG=debug",
-        "ghcr.io/kcirtapfromspace/ralph:latest"
+        "ghcr.io/kcirtapfromspace/ralph-machineo:latest"
       ],
       "transport": "stdio"
     }
@@ -236,7 +236,7 @@ Mount a custom quality configuration:
         "-i",
         "--rm",
         "-v", "/path/to/quality:/app/quality:ro",
-        "ghcr.io/kcirtapfromspace/ralph:latest"
+        "ghcr.io/kcirtapfromspace/ralph-machineo:latest"
       ],
       "transport": "stdio"
     }
@@ -250,10 +250,10 @@ Mount a custom quality configuration:
 
 ```bash
 # Run Ralph MCP server (interactive mode for MCP communication)
-docker run -i --rm ghcr.io/kcirtapfromspace/ralph:latest
+docker run -i --rm ghcr.io/kcirtapfromspace/ralph-machineo:latest
 
 # Show Ralph help
-docker run --rm ghcr.io/kcirtapfromspace/ralph:latest --help
+docker run --rm ghcr.io/kcirtapfromspace/ralph-machineo:latest --help
 ```
 
 ### With PRD File
@@ -262,7 +262,7 @@ docker run --rm ghcr.io/kcirtapfromspace/ralph:latest --help
 # Mount and load a PRD file
 docker run -i --rm \
   -v /path/to/prd.json:/app/prd.json:ro \
-  ghcr.io/kcirtapfromspace/ralph:latest \
+  ghcr.io/kcirtapfromspace/ralph-machineo:latest \
   --prd /app/prd.json
 ```
 
@@ -272,12 +272,12 @@ docker run -i --rm \
 # Enable debug logging
 docker run -i --rm \
   -e RUST_LOG=debug \
-  ghcr.io/kcirtapfromspace/ralph:latest
+  ghcr.io/kcirtapfromspace/ralph-machineo:latest
 
 # Enable trace logging for MCP communication
 docker run -i --rm \
   -e RUST_LOG=ralph=debug,rmcp=trace \
-  ghcr.io/kcirtapfromspace/ralph:latest
+  ghcr.io/kcirtapfromspace/ralph-machineo:latest
 ```
 
 ### With Volume Mounts
@@ -287,7 +287,7 @@ docker run -i --rm \
 docker run -i --rm \
   -v /path/to/prd.json:/app/prd.json:ro \
   -v /path/to/quality:/app/quality:ro \
-  ghcr.io/kcirtapfromspace/ralph:latest \
+  ghcr.io/kcirtapfromspace/ralph-machineo:latest \
   --prd /app/prd.json
 ```
 
@@ -295,10 +295,10 @@ docker run -i --rm \
 
 ```bash
 # Use a specific version
-docker run -i --rm ghcr.io/kcirtapfromspace/ralph:v1.0.0
+docker run -i --rm ghcr.io/kcirtapfromspace/ralph-machineo:v1.0.0
 
 # Use image by git SHA
-docker run -i --rm ghcr.io/kcirtapfromspace/ralph:abc123
+docker run -i --rm ghcr.io/kcirtapfromspace/ralph-machineo:abc123
 ```
 
 ## Local Development with Docker Compose
@@ -357,8 +357,8 @@ Ralph exposes these resources:
 **Symptom:** "Unable to find image" or "manifest not found" errors.
 
 **Solutions:**
-1. Check image name is correct: `ghcr.io/kcirtapfromspace/ralph`
-2. Pull the image explicitly: `docker pull ghcr.io/kcirtapfromspace/ralph:latest`
+1. Check image name is correct: `ghcr.io/kcirtapfromspace/ralph-machineo`
+2. Pull the image explicitly: `docker pull ghcr.io/kcirtapfromspace/ralph-machineo:latest`
 3. Verify internet connectivity
 4. Check GitHub Container Registry status
 
@@ -378,7 +378,7 @@ Ralph exposes these resources:
 **Solutions:**
 1. Check container logs: `docker logs <container_id>`
 2. Ensure you're running with `-i` flag (interactive mode required for stdio)
-3. Test the image manually: `docker run --rm ghcr.io/kcirtapfromspace/ralph:latest --help`
+3. Test the image manually: `docker run --rm ghcr.io/kcirtapfromspace/ralph-machineo:latest --help`
 
 ### Claude Desktop Not Connecting
 
@@ -406,7 +406,7 @@ Ralph exposes these resources:
 **Symptom:** Ralph takes a long time to start or times out.
 
 **Solutions:**
-1. Pre-pull the image: `docker pull ghcr.io/kcirtapfromspace/ralph:latest`
+1. Pre-pull the image: `docker pull ghcr.io/kcirtapfromspace/ralph-machineo:latest`
 2. Check available disk space: `docker system df`
 3. Prune unused images: `docker image prune`
 
@@ -427,14 +427,14 @@ To collect logs for debugging:
 # Run with debug logging and capture output
 docker run -i --rm \
   -e RUST_LOG=debug \
-  ghcr.io/kcirtapfromspace/ralph:latest 2>&1 | tee ralph-debug.log
+  ghcr.io/kcirtapfromspace/ralph-machineo:latest 2>&1 | tee ralph-debug.log
 ```
 
 ### Getting Help
 
 If you continue to experience issues:
 
-1. Check the [Ralph GitHub Issues](https://github.com/kcirtapfromspace/ralph/issues)
+1. Check the [Ralph GitHub Issues](https://github.com/kcirtapfromspace/ralph-machineo/issues)
 2. Enable debug logging and capture output
 3. Create an issue with:
    - Docker version (`docker --version`)
@@ -445,6 +445,6 @@ If you continue to experience issues:
 
 ## Related Documentation
 
-- [Claude Desktop Setup Guide](https://github.com/kcirtapfromspace/ralph/blob/main/docs/guides/claude-desktop-setup.md) - Native binary setup (alternative to Docker)
+- [Claude Desktop Setup Guide](https://github.com/kcirtapfromspace/ralph-machineo/blob/main/docs/guides/claude-desktop-setup.md) - Native binary setup (alternative to Docker)
 - [Examples README](../../examples/README.md) - Additional configuration examples
 - [Ralph README](../../README.md) - Main project documentation
