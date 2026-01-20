@@ -165,6 +165,8 @@ To allow Codex to bypass approvals and sandboxing, set:
 RALPH_CODEX_DANGEROUS=1 ralph --agent codex
 ```
 
+Codex runs with `--json` output enabled for non-interactive execution.
+
 Backpressure controls:
 
 ```bash
