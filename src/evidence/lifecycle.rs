@@ -1,10 +1,10 @@
 use chrono::{SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const SCHEMA_VERSION: &str = "v1";
 
 /// Lifecycle event types for a run.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleEventType {
     RunStart,
@@ -13,9 +13,9 @@ pub enum LifecycleEventType {
 }
 
 /// Lifecycle event payload stored as evidence.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LifecycleEvent {
-    pub schema_version: &'static str,
+    pub schema_version: String,
     pub event_type: LifecycleEventType,
     pub timestamp: String,
     pub run_id: String,
@@ -31,7 +31,7 @@ pub struct LifecycleEvent {
 impl LifecycleEvent {
     pub fn new(event_type: LifecycleEventType, run_id: String, step_id: String) -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            schema_version: SCHEMA_VERSION.to_string(),
             event_type,
             timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             run_id,

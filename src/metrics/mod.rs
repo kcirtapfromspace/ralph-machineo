@@ -347,6 +347,20 @@ impl RunMetricsStore {
         std::fs::rename(&temp_path, &path)?;
         Ok(path)
     }
+
+    /// Load run metrics from disk.
+    pub fn load(&self, run_id: &str) -> io::Result<Option<RunMetrics>> {
+        let file_name = format!("{}.json", run_id);
+        let path = self.runs_dir.join(file_name);
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                let metrics = serde_json::from_str(&contents).map_err(io::Error::other)?;
+                Ok(Some(metrics))
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl ExecutionMetrics {
