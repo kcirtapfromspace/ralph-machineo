@@ -5,11 +5,11 @@
 
 ![Ralph](ralph-machineo.webp)
 
-Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`. Ralph can also run as an MCP server and execute stories in parallel batches.
+Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](), or local llms repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`. Ralph can also run as an MCP server and execute stories in parallel batches.
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
-
-[Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
+[Read Ryan Carson in-depth article on how he use Ralph](https://x.com/ryancarson/status/2008548371712135632)
+Orignally forked from [snarktank/ralph](https://github.com/snarktank/ralph)
 
 ## Prerequisites
 
