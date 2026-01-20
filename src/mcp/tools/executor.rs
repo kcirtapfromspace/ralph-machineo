@@ -1275,6 +1275,7 @@ fn build_agent_invocation(
         let mut args = vec![
             "exec".to_string(),
             "--full-auto".to_string(),
+            "--dangerously-bypass-approvals-and-sandbox".to_string(),
             prompt.to_string(),
         ];
 

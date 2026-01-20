@@ -53,6 +53,9 @@ npm run dev
 - Each iteration spawns a fresh Claude Code instance with clean context
 - Memory persists via git history, `progress.txt`, and `prd.json`
 - Stories should be small enough to complete in one context window
+- Set `RALPH_AUTONOMOUS=1` to auto-resume checkpoints without prompts
+- `--agent codex` auto-enables autonomous resume behavior
+- Codex runs with `--dangerously-bypass-approvals-and-sandbox`
 - Always update AGENTS.md with discovered patterns for future iterations
 
 ---
