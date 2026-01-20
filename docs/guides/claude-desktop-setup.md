@@ -27,7 +27,7 @@ Before setting up Ralph with Claude Desktop, ensure you have:
 
 ```bash
 # Clone the repository
-git clone https://github.com/kcirtapfromspace/ralph.git
+git clone https://github.com/kcirtapfromspace/ralph-machineo.git
 cd ralph
 
 # Build in release mode
@@ -282,7 +282,7 @@ View logs in Claude Desktop's developer tools or check stderr output.
 
 If you continue to experience issues:
 
-1. Check the [Ralph GitHub Issues](https://github.com/kcirtapfromspace/ralph/issues)
+1. Check the [Ralph GitHub Issues](https://github.com/kcirtapfromspace/ralph-machineo/issues)
 2. Enable debug logging and capture output
 3. Create an issue with reproduction steps and logs
 
