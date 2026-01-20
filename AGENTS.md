@@ -55,7 +55,7 @@ npm run dev
 - Stories should be small enough to complete in one context window
 - Set `RALPH_AUTONOMOUS=1` to auto-resume checkpoints without prompts
 - `--agent codex` auto-enables autonomous resume behavior
-- Codex runs with `--dangerously-bypass-approvals-and-sandbox`
+- Codex bypasses approvals/sandbox only when `RALPH_CODEX_DANGEROUS=1` is set
 - Always update AGENTS.md with discovered patterns for future iterations
 
 ---
