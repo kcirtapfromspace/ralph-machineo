@@ -1260,6 +1260,13 @@ fn build_agent_invocation(
     prompt: &str,
     project_root: &Path,
 ) -> (String, Vec<String>) {
+    fn env_var_truthy(name: &str) -> bool {
+        std::env::var(name)
+            .ok()
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    }
+
     if agent_command == "claude" || agent_command.contains("claude") {
         // Claude Code CLI - use --print for non-interactive mode
         // and --dangerously-skip-permissions to allow file changes
@@ -1275,9 +1282,12 @@ fn build_agent_invocation(
         let mut args = vec![
             "exec".to_string(),
             "--full-auto".to_string(),
-            "--dangerously-bypass-approvals-and-sandbox".to_string(),
             prompt.to_string(),
         ];
+
+        if env_var_truthy("RALPH_CODEX_DANGEROUS") {
+            args.insert(2, "--dangerously-bypass-approvals-and-sandbox".to_string());
+        }
 
         if let Ok(model) = std::env::var("CODEX_OSS_MODEL") {
             args.push("--model".to_string());
