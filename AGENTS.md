@@ -56,6 +56,7 @@ npm run dev
 - Set `RALPH_AUTONOMOUS=1` to auto-resume checkpoints without prompts
 - `--agent codex` auto-enables autonomous resume behavior
 - Codex bypasses approvals/sandbox only when `RALPH_CODEX_DANGEROUS=1` is set
+- Codex runs with `--json` output for non-interactive execution
 - Always update AGENTS.md with discovered patterns for future iterations
 
 ---

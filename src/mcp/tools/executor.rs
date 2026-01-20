@@ -1282,6 +1282,7 @@ fn build_agent_invocation(
         let mut args = vec![
             "exec".to_string(),
             "--full-auto".to_string(),
+            "--json".to_string(),
             prompt.to_string(),
         ];
 
