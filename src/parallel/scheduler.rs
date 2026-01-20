@@ -42,6 +42,16 @@ pub enum QueuePolicy {
     DropOldest,
 }
 
+impl QueuePolicy {
+    fn as_label(&self) -> &'static str {
+        match self {
+            QueuePolicy::Block => "block",
+            QueuePolicy::Reject => "reject",
+            QueuePolicy::DropOldest => "drop_oldest",
+        }
+    }
+}
+
 /// Configuration options for parallel story execution.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -372,6 +382,7 @@ impl ParallelRunner {
             );
             // Set the max workers for display
             display.set_max_workers(self.config.max_concurrency);
+            display.set_queue_info(self.config.queue_capacity, self.config.queue_policy.as_label());
 
             // Initialize display with story information
             let story_infos: Vec<_> = prd
@@ -428,6 +439,13 @@ impl ParallelRunner {
                         } => {
                             display.story_failed(story_id, story_id, error);
                         }
+                        ParallelUIEvent::QueueStatus {
+                            queued,
+                            capacity,
+                            policy,
+                        } => {
+                            display.display_queue_status(*queued, *capacity, policy);
+                        }
                         ParallelUIEvent::ConflictDeferred {
                             story_id,
                             blocking_story_id,
@@ -439,7 +457,8 @@ impl ParallelRunner {
                             display.story_sequential_retry(story_id, story_id, reason);
                         }
                         ParallelUIEvent::GateUpdate { .. }
-                        | ParallelUIEvent::ReconciliationStatus { .. } => {
+                        | ParallelUIEvent::ReconciliationStatus { .. }
+                        | ParallelUIEvent::QueueStatus { .. } => {
                             // These events don't have direct display methods yet
                         }
                         ParallelUIEvent::KeyboardToggle { .. }
@@ -479,6 +498,7 @@ impl ParallelRunner {
         // Main execution loop
         let mut pending_queue: VecDeque<StoryNode> = VecDeque::new();
         let mut queued_ids: HashSet<String> = HashSet::new();
+        let mut last_queue_size: Option<usize> = None;
         loop {
             // Get current state snapshot
             let state = self.execution_state.read().await;
@@ -577,6 +597,19 @@ impl ParallelRunner {
 
                 queued_ids.insert(story.id.clone());
                 pending_queue.push_back(story);
+            }
+
+            if let Some(ref sender) = ui_sender {
+                let queue_size = pending_queue.len();
+                if last_queue_size != Some(queue_size) {
+                    last_queue_size = Some(queue_size);
+                    let event = ParallelUIEvent::QueueStatus {
+                        queued: queue_size,
+                        capacity: self.config.queue_capacity,
+                        policy: self.config.queue_policy.as_label().to_string(),
+                    };
+                    let _ = sender.try_send(event);
+                }
             }
 
             if blocked_on_queue {

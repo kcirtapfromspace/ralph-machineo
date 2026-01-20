@@ -105,6 +105,14 @@ struct Cli {
     #[arg(long, default_value = "3")]
     max_concurrency: usize,
 
+    /// Max queued stories for parallel execution
+    #[arg(long, default_value = "32")]
+    parallel_queue_capacity: usize,
+
+    /// Backpressure policy when parallel queue is full (block, reject, drop_oldest)
+    #[arg(long, default_value = "block")]
+    parallel_queue_policy: String,
+
     /// Resume from checkpoint if available
     #[arg(long)]
     resume: bool,
@@ -153,6 +161,14 @@ enum Commands {
         /// Max concurrent stories (0 = unlimited)
         #[arg(long, default_value = "3")]
         max_concurrency: usize,
+
+        /// Max queued stories for parallel execution
+        #[arg(long, default_value = "32")]
+        parallel_queue_capacity: usize,
+
+        /// Backpressure policy when parallel queue is full (block, reject, drop_oldest)
+        #[arg(long, default_value = "block")]
+        parallel_queue_policy: String,
 
         /// Resume from checkpoint if available
         #[arg(long)]
@@ -307,6 +323,12 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!(
                 "  --max-concurrency <N>    Max concurrent stories (0 = unlimited) [default: 3]"
             );
+            println!(
+                "  --parallel-queue-capacity <N>  Max queued stories for parallel execution [default: 32]"
+            );
+            println!(
+                "  --parallel-queue-policy <POLICY>  Backpressure policy (block, reject, drop_oldest) [default: block]"
+            );
             println!("  --resume                 Resume from checkpoint if available");
             println!("  --no-resume              Skip checkpoint prompt (do not resume)");
             println!("  --timeout <SECONDS>      Agent timeout in seconds (overrides default)");
@@ -322,6 +344,8 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             ref agent,
             parallel,
             max_concurrency,
+            parallel_queue_capacity,
+            ref parallel_queue_policy,
             resume,
             no_resume,
             timeout,
@@ -335,6 +359,8 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 max_iterations,
                 parallel,
                 max_concurrency,
+                parallel_queue_capacity,
+                parallel_queue_policy.clone(),
                 resume,
                 no_resume,
                 timeout,
@@ -474,6 +500,8 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cli.max_iterations,
                     cli.parallel,
                     cli.max_concurrency,
+                    cli.parallel_queue_capacity,
+                    cli.parallel_queue_policy.clone(),
                     cli.resume,
                     cli.no_resume,
                     cli.timeout,
@@ -521,6 +549,8 @@ async fn run_stories(
     max_iterations: u32,
     parallel: bool,
     max_concurrency: usize,
+    parallel_queue_capacity: usize,
+    parallel_queue_policy: String,
     resume: bool,
     no_resume: bool,
     timeout: Option<u64>,
@@ -528,18 +558,35 @@ async fn run_stories(
     agent: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ralphmacchio::parallel::scheduler::ParallelRunnerConfig;
+    use ralphmacchio::parallel::scheduler::QueuePolicy;
 
     let working_dir = dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let display_options = build_display_options(cli);
 
     // Build parallel config with the specified max_concurrency
     // 0 means unlimited, which we represent with usize::MAX
+    let env_queue_capacity = std::env::var("RALPH_PARALLEL_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok());
+    let env_queue_policy = std::env::var("RALPH_PARALLEL_QUEUE_POLICY").ok();
+
+    let queue_policy = match env_queue_policy
+        .as_deref()
+        .unwrap_or(parallel_queue_policy.as_str())
+    {
+        "reject" => QueuePolicy::Reject,
+        "drop_oldest" => QueuePolicy::DropOldest,
+        _ => QueuePolicy::Block,
+    };
+
     let parallel_config = ParallelRunnerConfig {
         max_concurrency: if max_concurrency == 0 {
             u32::MAX
         } else {
             max_concurrency as u32
         },
+        queue_capacity: env_queue_capacity.unwrap_or(parallel_queue_capacity).max(1),
+        queue_policy,
         ..Default::default()
     };
 

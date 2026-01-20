@@ -144,6 +144,16 @@ pub enum ParallelUIEvent {
         conflicting_files: Vec<PathBuf>,
     },
 
+    /// Current queue status for parallel execution.
+    QueueStatus {
+        /// Number of queued stories waiting to run.
+        queued: usize,
+        /// Maximum queue capacity.
+        capacity: usize,
+        /// Queue policy label (block, reject, drop_oldest).
+        policy: String,
+    },
+
     /// Status update from the reconciliation engine.
     ReconciliationStatus {
         /// Whether reconciliation was successful (no issues found).
@@ -189,6 +199,7 @@ impl ParallelUIEvent {
             Self::ConflictDeferred { story_id, .. } => Some(story_id),
             Self::ReconciliationStatus { .. } => None,
             Self::SequentialRetryStarted { story_id, .. } => Some(story_id),
+            Self::QueueStatus { .. } => None,
             Self::KeyboardToggle { .. } => None,
             Self::GracefulQuitRequested => None,
             Self::ImmediateInterrupt => None,

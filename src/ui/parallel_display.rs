@@ -52,6 +52,10 @@ pub struct ParallelRunnerDisplay {
     colors_enabled: bool,
     /// Maximum concurrent workers (for display purposes)
     max_workers: u32,
+    /// Queue capacity for display purposes
+    queue_capacity: usize,
+    /// Queue policy label for display purposes
+    queue_policy: String,
 }
 
 impl Default for ParallelRunnerDisplay {
@@ -74,6 +78,8 @@ impl ParallelRunnerDisplay {
             display_options,
             colors_enabled,
             max_workers: 3, // Default concurrency
+            queue_capacity: 0,
+            queue_policy: "unknown".to_string(),
         }
     }
 
@@ -89,6 +95,8 @@ impl ParallelRunnerDisplay {
             display_options,
             colors_enabled,
             max_workers: 3,
+            queue_capacity: 0,
+            queue_policy: "unknown".to_string(),
         }
     }
 
@@ -104,6 +112,8 @@ impl ParallelRunnerDisplay {
             display_options: options,
             colors_enabled,
             max_workers: 3,
+            queue_capacity: 0,
+            queue_policy: "unknown".to_string(),
         }
     }
 
@@ -118,6 +128,8 @@ impl ParallelRunnerDisplay {
             display_options: options,
             colors_enabled,
             max_workers: 3,
+            queue_capacity: 0,
+            queue_policy: "unknown".to_string(),
         }
     }
 
@@ -147,6 +159,26 @@ impl ParallelRunnerDisplay {
         &self.display_options
     }
 
+    /// Set queue info for display purposes.
+    pub fn set_queue_info(&mut self, capacity: usize, policy: &str) {
+        self.queue_capacity = capacity;
+        self.queue_policy = policy.to_string();
+    }
+
+    /// Display a one-line queue status update.
+    pub fn display_queue_status(&self, queued: usize, capacity: usize, policy: &str) {
+        if self.display_options.quiet {
+            return;
+        }
+
+        let message = format!("Queue: {}/{} ({})", queued, capacity, policy);
+        if self.colors_enabled {
+            println!("{}", message.color(self.theme.muted));
+        } else {
+            println!("{}", message);
+        }
+    }
+
     /// Check if colors are enabled.
     pub fn colors_enabled(&self) -> bool {
         self.colors_enabled
@@ -165,7 +197,7 @@ impl ParallelRunnerDisplay {
     /// Display the parallel execution header with worker count.
     ///
     /// Shows a banner indicating parallel mode is active and the number of workers.
-    pub fn display_header(&self, story_count: usize) {
+    pub fn display_header(&self, story_count: usize, queue_capacity: usize, queue_policy: &str) {
         if self.display_options.quiet {
             return;
         }
@@ -199,8 +231,8 @@ impl ParallelRunnerDisplay {
         }
         println!();
         println!(
-            "  Workers: {}  |  Stories: {}",
-            workers_display, story_count
+            "  Workers: {}  |  Stories: {}  |  Queue: {} ({})",
+            workers_display, story_count, queue_capacity, queue_policy
         );
         println!();
     }
@@ -279,7 +311,7 @@ impl ParallelRunnerDisplay {
         self.clear();
 
         // Display header with worker count
-        self.display_header(stories.len());
+        self.display_header(stories.len(), self.queue_capacity, &self.queue_policy);
 
         // Create a progress bar for each story
         for story in stories {
