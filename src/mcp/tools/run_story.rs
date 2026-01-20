@@ -35,6 +35,12 @@ pub struct RunStoryResponse {
     /// Git commit hash if completed successfully
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_hash: Option<String>,
+    /// Queue position when the story is queued
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<usize>,
+    /// Current queue size when the story is queued
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_size: Option<usize>,
     /// Message describing the result
     pub message: String,
 }
@@ -147,6 +153,8 @@ pub fn create_success_response(story: &PrdStory, commit_hash: Option<String>) ->
         story_id: Some(story.id.clone()),
         story_title: Some(story.title.clone()),
         commit_hash,
+        queue_position: None,
+        queue_size: None,
         message: format!(
             "Successfully executed story '{}': {}",
             story.id, story.title
@@ -161,6 +169,8 @@ pub fn create_error_response(error: &RunStoryError) -> RunStoryResponse {
         story_id: None,
         story_title: None,
         commit_hash: None,
+        queue_position: None,
+        queue_size: None,
         message: error.to_string(),
     }
 }
@@ -172,6 +182,8 @@ pub fn create_started_response(story: &PrdStory, max_iterations: u32) -> RunStor
         story_id: Some(story.id.clone()),
         story_title: Some(story.title.clone()),
         commit_hash: None,
+        queue_position: None,
+        queue_size: None,
         message: format!(
             "Started execution of story '{}': {} (max {} iterations)",
             story.id, story.title, max_iterations
