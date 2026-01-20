@@ -1,0 +1,32 @@
+[package]
+name = "ralphmacchio-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "CLI for Ralph - autonomous AI agent loop using Claude Code"
+authors = ["kcirtapfromspace"]
+license = "MIT"
+repository = "https://github.com/kcirtapfromspace/ralph"
+homepage = "https://github.com/kcirtapfromspace/ralph"
+documentation = "https://docs.rs/ralphmacchio-cli"
+readme = "../README.md"
+keywords = ["ai", "agent", "claude", "automation", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "ralph"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+colored = "2"
+dirs = "5"
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
