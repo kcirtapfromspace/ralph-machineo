@@ -565,6 +565,7 @@ impl Runner {
                     None
                 }
             })
+            .filter(|path| path != ".ralph/checkpoint.json" && path != ".ralph/checkpoint.json.tmp")
             .collect();
 
         Ok(files)
