@@ -411,6 +411,8 @@ mod tests {
             story_id: Some("US-001".to_string()),
             story_title: Some("Test".to_string()),
             commit_hash: Some("abc123".to_string()),
+            queue_position: None,
+            queue_size: None,
             message: "Success".to_string(),
         };
 
@@ -427,6 +429,8 @@ mod tests {
             story_id: None,
             story_title: None,
             commit_hash: None,
+            queue_position: None,
+            queue_size: None,
             message: "Error".to_string(),
         };
 

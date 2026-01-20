@@ -681,7 +681,8 @@ mod tests {
     fn test_new_default() {
         let display = ParallelRunnerDisplay::new();
         assert_eq!(display.story_count(), 0);
-        assert!(display.colors_enabled()); // Default should have colors enabled
+        let expected = DisplayOptions::default().should_enable_colors();
+        assert_eq!(display.colors_enabled(), expected);
     }
 
     #[test]
