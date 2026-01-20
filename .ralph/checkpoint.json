@@ -1,20 +1,13 @@
 {
   "version": 1,
-  "created_at": "2026-01-20T19:42:40.792343Z",
+  "created_at": "2026-01-20T19:49:11.678734Z",
   "current_story": {
-    "story_id": "US-002",
+    "story_id": "US-001",
     "iteration": 1,
     "max_iterations": 10
   },
   "pause_reason": "iteration_boundary",
   "uncommitted_files": [
-    "GENTS.md",
-    "rc/lib.rs",
-    "rc/metrics/mod.rs",
-    "rc/parallel/scheduler.rs",
-    "rc/runner.rs",
-    ".ralph/",
-    "src/evidence/",
-    "tasks/prd-runtime-evidence.md"
+    "ralph/checkpoint.json"
   ]
 }

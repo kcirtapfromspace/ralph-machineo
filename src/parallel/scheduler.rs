@@ -1065,6 +1065,14 @@ impl ParallelRunner {
                 // If reconciliation failed and we couldn't recover, return error
                 if let Some(error) = reconciliation_result {
                     let state = self.execution_state.read().await;
+                    emit_run_complete(
+                        &evidence,
+                        "failed",
+                        Some("reconciliation_failed".to_string()),
+                        Some(error.clone()),
+                    )
+                    .await;
+                    save_metrics(&run_metrics);
                     return RunResult {
                         all_passed: false,
                         stories_passed: state.completed.len(),
