@@ -717,6 +717,7 @@ impl StoryExecutor {
             prompt,
             self.config.project_root.as_path(),
         );
+        let codex_json = program.contains("codex") && args.iter().any(|arg| arg == "--json");
 
         // Check if the agent is available (cross-platform)
         if !is_program_in_path(&program) {
@@ -805,6 +806,18 @@ impl StoryExecutor {
                         Ok(Some(text)) => {
                             // Activity detected - update heartbeat
                             heartbeat_monitor.pulse().await;
+                            if codex_json {
+                                if let Some((parsed, is_error)) = extract_codex_json_line(&text) {
+                                    let target = if is_error {
+                                        &mut stderr_output
+                                    } else {
+                                        &mut stdout_output
+                                    };
+                                    target.push_str(&parsed);
+                                    target.push('\n');
+                                    continue;
+                                }
+                            }
                             // Collect stdout for error diagnostics
                             stdout_output.push_str(&text);
                             stdout_output.push('\n');
@@ -1321,6 +1334,54 @@ fn build_agent_invocation(
     }
 }
 
+fn extract_codex_json_line(line: &str) -> Option<(String, bool)> {
+    fn extract_text(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Array(items) => {
+                let parts: Vec<String> = items.iter().filter_map(extract_text).collect();
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join(""))
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(text) = map.get("text").and_then(extract_text) {
+                    return Some(text);
+                }
+                if let Some(content) = map.get("content").and_then(extract_text) {
+                    return Some(content);
+                }
+                if let Some(message) = map.get("message").and_then(extract_text) {
+                    return Some(message);
+                }
+                if let Some(delta) = map.get("delta").and_then(extract_text) {
+                    return Some(delta);
+                }
+                if let Some(output) = map.get("output").and_then(extract_text) {
+                    return Some(output);
+                }
+                if let Some(data) = map.get("data").and_then(extract_text) {
+                    return Some(data);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let is_error = value.get("error").is_some()
+        || value
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|t| t.eq_ignore_ascii_case("error"))
+            .unwrap_or(false);
+    let text = extract_text(&value).unwrap_or_else(|| value.to_string());
+    Some((text, is_error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1491,5 +1552,13 @@ mod tests {
         assert_eq!(args[2], "exec");
         assert!(args.contains(&"--full-auto".to_string()));
         assert!(args.contains(&"test prompt".to_string()));
+    }
+
+    #[test]
+    fn test_extract_codex_json_line_text() {
+        let line = r#"{"type":"message","data":{"content":[{"type":"text","text":"Hello"}]}}"#;
+        let parsed = extract_codex_json_line(line).unwrap();
+        assert_eq!(parsed.0, "Hello");
+        assert!(!parsed.1);
     }
 }
