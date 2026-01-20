@@ -844,6 +844,13 @@ impl StoryExecutor {
                         Ok(Some(text)) => {
                             // Activity detected - update heartbeat
                             heartbeat_monitor.pulse().await;
+                            if codex_json {
+                                if let Some((parsed, _is_error)) = extract_codex_json_line(&text) {
+                                    stderr_output.push_str(&parsed);
+                                    stderr_output.push('\n');
+                                    continue;
+                                }
+                            }
                             // Collect stderr for error reporting
                             stderr_output.push_str(&text);
                             stderr_output.push('\n');
