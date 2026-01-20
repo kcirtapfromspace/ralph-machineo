@@ -56,7 +56,7 @@ impl EvidenceExporter {
         let metadata = self.evidence_store.load_metadata(run_id)?;
         let events = self.evidence_store.load_events(run_id)?;
         let metrics = self.metrics_store.load(run_id).map_err(EvidenceError::Io)?;
-        let status = determine_run_status(&events);
+        let status = determine_run_status(&events, metrics.as_ref());
 
         Ok(EvidenceRunExport {
             schema_version: EVIDENCE_SCHEMA_VERSION,
@@ -69,7 +69,13 @@ impl EvidenceExporter {
     }
 }
 
-fn determine_run_status(events: &[EvidenceRecord]) -> RunStatus {
+fn determine_run_status(events: &[EvidenceRecord], metrics: Option<&RunMetrics>) -> RunStatus {
+    if let Some(metrics) = metrics {
+        if metrics.expected_steps > 0 && metrics.completeness_percent < 100.0 {
+            return RunStatus::Incomplete;
+        }
+    }
+
     for record in events.iter().rev() {
         if record.kind != "lifecycle" {
             continue;
@@ -148,5 +154,52 @@ mod tests {
         assert_eq!(export.status, RunStatus::Success);
         assert!(export.metrics.is_some());
         assert_eq!(export.events.len(), 2);
+    }
+
+    #[test]
+    fn test_export_run_marks_incomplete_when_evidence_missing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let store = EvidenceStore::new(temp_dir.path(), EvidenceStoreConfig::new(30))
+            .expect("evidence store");
+        let run_id = "run-456";
+
+        let start_event = LifecycleEvent::new(
+            LifecycleEventType::RunStart,
+            run_id.to_string(),
+            "run".to_string(),
+        );
+        let mut complete_event = LifecycleEvent::new(
+            LifecycleEventType::RunComplete,
+            run_id.to_string(),
+            "run".to_string(),
+        );
+        complete_event.status = Some("success".to_string());
+
+        let start_record = EvidenceRecord::new(
+            run_id,
+            "lifecycle",
+            to_value(start_event).expect("start payload"),
+        );
+        let complete_record = EvidenceRecord::new(
+            run_id,
+            "lifecycle",
+            to_value(complete_event).expect("complete payload"),
+        );
+
+        store.append_record(&start_record).expect("append start");
+        store
+            .append_record(&complete_record)
+            .expect("append complete");
+
+        let metrics_collector = RunMetricsCollector::new(run_id, 2);
+        metrics_collector.record_evidence_step("step-1");
+        let metrics = metrics_collector.finish();
+        let metrics_store = RunMetricsStore::new(temp_dir.path()).expect("metrics store");
+        metrics_store.save(&metrics).expect("save metrics");
+
+        let exporter = EvidenceExporter::new(temp_dir.path()).expect("exporter");
+        let export = exporter.export_run(run_id).expect("export run");
+
+        assert_eq!(export.status, RunStatus::Incomplete);
     }
 }
