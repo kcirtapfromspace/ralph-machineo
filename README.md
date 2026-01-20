@@ -1,11 +1,11 @@
 # Ralph
 
-[![CI](https://github.com/kcirtapfromspace/ralph/actions/workflows/ci.yml/badge.svg)](https://github.com/kcirtapfromspace/ralph/actions/workflows/ci.yml)
-[![Docker](https://github.com/kcirtapfromspace/ralph/actions/workflows/docker.yml/badge.svg)](https://github.com/kcirtapfromspace/ralph/actions/workflows/docker.yml)
+[![CI](https://github.com/kcirtapfromspace/ralph-machineo/actions/workflows/ci.yml/badge.svg)](https://github.com/kcirtapfromspace/ralph-machineo/actions/workflows/ci.yml)
+[![Docker](https://github.com/kcirtapfromspace/ralph-machineo/actions/workflows/docker.yml/badge.svg)](https://github.com/kcirtapfromspace/ralph-machineo/actions/workflows/docker.yml)
 
 ![Ralph](ralph.webp)
 
-Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`. Ralph can also run as an MCP server and execute stories in parallel batches.
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
@@ -23,7 +23,7 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew install --HEAD https://raw.githubusercontent.com/kcirtapfromspace/ralph/main/Formula/ralph.rb
+brew install ralph
 ```
 
 ### Build from Source
@@ -31,7 +31,7 @@ brew install --HEAD https://raw.githubusercontent.com/kcirtapfromspace/ralph/mai
 Requires [Rust](https://rustup.rs) to be installed.
 
 ```bash
-git clone https://github.com/kcirtapfromspace/ralph.git ~/.ralph
+git clone https://github.com/kcirtapfromspace/ralph-machineo.git ~/.ralph
 cd ~/.ralph
 ./install.sh
 ```
@@ -59,7 +59,7 @@ To uninstall:
 Prefer Claude Desktop over the terminal? Ralph is also available as an MCP server via Docker:
 
 ```bash
-docker pull ghcr.io/kcirtapfromspace/ralph:latest
+docker pull ghcr.io/kcirtapfromspace/ralph-machineo:latest
 ```
 
 See the [Docker MCP Setup Guide](docs/guides/docker-mcp-setup.md) for Claude Desktop configuration.
@@ -172,9 +172,9 @@ Ralph will:
 
 ## Flowchart
 
-[![Ralph Flowchart](ralph-flowchart.png)](https://snarktank.github.io/ralph/)
+[![Ralph Flowchart](ralph-flowchart.png)](https://kcirtapfromspace.github.io/ralph-machineo/)
 
-**[View Interactive Flowchart](https://snarktank.github.io/ralph/)** - Click through to see each step with animations.
+**[View Interactive Flowchart](https://kcirtapfromspace.github.io/ralph-machineo/)** - Click through to see each step with animations.
 
 The `flowchart/` directory contains the source code. To run locally:
 
@@ -368,7 +368,7 @@ docker build -t ralph-mcp .
 docker compose up --build
 ```
 
-Images are published to `ghcr.io/kcirtapfromspace/ralph` on every push to main.
+Images are published to `ghcr.io/kcirtapfromspace/ralph-machineo` on every push to main.
 
 ## References
 
