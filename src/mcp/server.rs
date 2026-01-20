@@ -28,6 +28,7 @@ use crate::mcp::tools::load_prd::{
 use crate::mcp::tools::run_story::{
     check_already_running, create_error_response as create_run_error_response,
     create_started_response, current_timestamp, find_story, RunStoryError, RunStoryRequest,
+    RunStoryResponse,
 };
 use crate::mcp::tools::stop_execution::{
     create_cancelled_response, create_not_running_response, get_running_story_id,
@@ -44,8 +45,9 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ErrorData as McpError;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{watch, RwLock};
 
@@ -105,6 +107,14 @@ pub enum ExecutionState {
     },
 }
 
+/// Queue entry for deferred story execution requests.
+#[derive(Debug, Clone)]
+struct QueuedRun {
+    story_id: String,
+    max_iterations: u32,
+    enqueued_at: u64,
+}
+
 /// Shared server state that can be accessed across async contexts.
 #[derive(Debug)]
 pub struct ServerState {
@@ -114,6 +124,8 @@ pub struct ServerState {
     pub execution_state: ExecutionState,
     /// Audit states indexed by audit ID
     pub audit_states: HashMap<String, AuditState>,
+    /// Pending story executions waiting for a slot
+    pub run_queue: VecDeque<QueuedRun>,
 }
 
 impl Default for ServerState {
@@ -122,6 +134,7 @@ impl Default for ServerState {
             prd_path: None,
             execution_state: ExecutionState::Idle,
             audit_states: HashMap::new(),
+            run_queue: VecDeque::new(),
         }
     }
 }
@@ -142,6 +155,10 @@ pub struct RalphMcpServer {
     state: Arc<RwLock<ServerState>>,
     /// Quality configuration for running quality gates
     config: Arc<Option<QualityConfig>>,
+    /// Max number of queued story executions
+    queue_capacity: usize,
+    /// Tracks whether the queue worker has been started
+    queue_worker_started: Arc<AtomicBool>,
     /// Cancellation signal sender - send true to cancel execution
     cancel_sender: Arc<watch::Sender<bool>>,
     /// Cancellation signal receiver - tools check this to know if cancelled
@@ -156,6 +173,15 @@ pub struct RalphMcpServer {
 }
 
 impl RalphMcpServer {
+    fn queue_capacity_from_env() -> usize {
+        let default_capacity = 32;
+        std::env::var("RALPH_QUEUE_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(default_capacity)
+    }
+
     /// Create a new RalphMcpServer instance.
     ///
     /// # Examples
@@ -170,6 +196,8 @@ impl RalphMcpServer {
         Self {
             state: Arc::new(RwLock::new(ServerState::default())),
             config: Arc::new(None),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -188,6 +216,8 @@ impl RalphMcpServer {
         Self {
             state: Arc::new(RwLock::new(ServerState::default())),
             config: Arc::new(None),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -217,8 +247,11 @@ impl RalphMcpServer {
                 prd_path: Some(prd_path),
                 execution_state: ExecutionState::Idle,
                 audit_states: HashMap::new(),
+                run_queue: VecDeque::new(),
             })),
             config: Arc::new(None),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -248,6 +281,8 @@ impl RalphMcpServer {
         Self {
             state: Arc::new(RwLock::new(ServerState::default())),
             config: Arc::new(Some(config)),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -280,6 +315,8 @@ impl RalphMcpServer {
         Self {
             state: Arc::new(RwLock::new(ServerState::default())),
             config: Arc::new(None),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -313,8 +350,11 @@ impl RalphMcpServer {
                 prd_path: Some(prd_path),
                 execution_state: ExecutionState::Idle,
                 audit_states: HashMap::new(),
+                run_queue: VecDeque::new(),
             })),
             config: Arc::new(None),
+            queue_capacity: Self::queue_capacity_from_env(),
+            queue_worker_started: Arc::new(AtomicBool::new(false)),
             cancel_sender: Arc::new(cancel_sender),
             cancel_receiver,
             tool_router: Self::tool_router(),
@@ -322,6 +362,190 @@ impl RalphMcpServer {
             #[cfg(test)]
             test_agent_override: None,
         }
+    }
+
+    /// Start the queue worker that drains queued MCP run requests.
+    pub fn start_queue_worker(&self) {
+        if self
+            .queue_worker_started
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        let server = self.clone();
+        tokio::spawn(async move {
+            server.queue_worker_loop().await;
+        });
+    }
+
+    async fn queue_worker_loop(&self) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            let queued = {
+                let mut state = self.state.write().await;
+                let is_idle = matches!(state.execution_state, ExecutionState::Idle);
+                if is_idle {
+                    state.run_queue.pop_front()
+                } else {
+                    None
+                }
+            };
+
+            if let Some(run) = queued {
+                if let Err(err) = self
+                    .start_story_execution(run.story_id.clone(), run.max_iterations)
+                    .await
+                {
+                    let mut state = self.state.write().await;
+                    state.execution_state = ExecutionState::Failed {
+                        story_id: run.story_id,
+                        error: err.to_string(),
+                    };
+                }
+            }
+        }
+    }
+
+    async fn start_story_execution(
+        &self,
+        story_id: String,
+        max_iterations: u32,
+    ) -> Result<RunStoryResponse, RunStoryError> {
+        let prd_path = {
+            let state = self.state.read().await;
+            state.prd_path.clone()
+        };
+
+        let prd_path = prd_path.ok_or(RunStoryError::NoPrdLoaded)?;
+        let story = find_story(&prd_path, &story_id)?;
+
+        // Reset cancellation and update state to Running
+        self.reset_cancel();
+        {
+            let mut state = self.state.write().await;
+            state.execution_state = ExecutionState::Running {
+                story_id: story_id.clone(),
+                started_at: current_timestamp(),
+                iteration: 1,
+                max_iterations,
+            };
+        }
+
+        // Detect available agent (use test override if available)
+        #[cfg(test)]
+        let detected_agent = self.test_agent_override.clone().or_else(detect_agent);
+        #[cfg(not(test))]
+        let detected_agent = detect_agent();
+
+        let agent_command = match detected_agent {
+            Some(agent) => agent,
+            None => {
+                let mut state = self.state.write().await;
+                state.execution_state = ExecutionState::Idle;
+                return Err(RunStoryError::ExecutionError(
+                    "No agent CLI found. Install Claude Code CLI (claude), Codex CLI (codex), or Amp CLI (amp)."
+                        .to_string(),
+                ));
+            }
+        };
+
+        // Get project root from PRD path
+        let project_root = prd_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        // Progress file path (in same directory as PRD)
+        let progress_path = project_root.join("progress.txt");
+
+        // Create executor config
+        let executor_config = ExecutorConfig {
+            prd_path: prd_path.clone(),
+            project_root: project_root.clone(),
+            progress_path,
+            quality_profile: self
+                .config
+                .as_ref()
+                .as_ref()
+                .map(|c| c.profiles.get("standard").cloned().unwrap_or_default()),
+            agent_command,
+            max_iterations,
+            git_mutex: None, // MCP server executes single story at a time
+            timeout_config: crate::timeout::TimeoutConfig::default(),
+            ..Default::default()
+        };
+
+        // Clone necessary data for the spawned task
+        let state = self.state.clone();
+        let cancel_receiver = self.cancel_receiver();
+        let display = self.display.clone();
+
+        // Spawn async task to execute the story
+        tokio::spawn(async move {
+            let executor = StoryExecutor::new(executor_config);
+
+            // Iteration callback to update state
+            let state_for_callback = state.clone();
+            let on_iteration = move |iteration: u32, _max: u32| {
+                let state_clone = state_for_callback.clone();
+                tokio::spawn(async move {
+                    let mut server_state = state_clone.write().await;
+                    if let ExecutionState::Running {
+                        iteration: iter, ..
+                    } = &mut server_state.execution_state
+                    {
+                        *iter = iteration;
+                    }
+                });
+            };
+
+            // Execute the story
+            match executor
+                .execute_story(&story_id, cancel_receiver, on_iteration)
+                .await
+            {
+                Ok(result) => {
+                    // Update state to Completed
+                    let mut server_state = state.write().await;
+                    server_state.execution_state = ExecutionState::Completed {
+                        story_id: story_id.clone(),
+                        commit_hash: result.commit_hash,
+                    };
+
+                    // Update display
+                    drop(server_state);
+                    if let Ok(mut disp) = display.try_write() {
+                        let completed_state = ExecutionState::Completed {
+                            story_id: story_id.clone(),
+                            commit_hash: None,
+                        };
+                        disp.update_from_state(&completed_state, None);
+                    }
+                }
+                Err(e) => {
+                    // Update state to Failed
+                    let mut server_state = state.write().await;
+                    server_state.execution_state = ExecutionState::Failed {
+                        story_id: story_id.clone(),
+                        error: e.to_string(),
+                    };
+
+                    // Update display
+                    drop(server_state);
+                    if let Ok(mut disp) = display.try_write() {
+                        let failed_state = ExecutionState::Failed {
+                            story_id: story_id.clone(),
+                            error: e.to_string(),
+                        };
+                        disp.update_from_state(&failed_state, None);
+                    }
+                }
+            }
+        });
+
+        Ok(create_started_response(&story, max_iterations))
     }
 
     /// Get read access to the shared state.
@@ -634,14 +858,6 @@ impl RalphMcpServer {
             }
         };
 
-        // Check if already running
-        if let Some(running_id) = check_already_running(&current_state) {
-            let response = create_run_error_response(&RunStoryError::AlreadyRunning(running_id));
-            return serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
-                format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
-            });
-        }
-
         // Find the story in the PRD
         let story = match find_story(&prd_path, &req.story_id) {
             Ok(story) => story,
@@ -653,141 +869,81 @@ impl RalphMcpServer {
             }
         };
 
-        // Reset cancellation and update state to Running
-        self.reset_cancel();
-        {
-            let mut state = self.state.write().await;
-            state.execution_state = ExecutionState::Running {
-                story_id: req.story_id.clone(),
-                started_at: current_timestamp(),
-                iteration: 1,
-                max_iterations,
-            };
-        }
+        // Queue request if already running or backlog exists
+        let mut state = self.state.write().await;
+        let is_running = check_already_running(&current_state).is_some();
+        let has_backlog = !state.run_queue.is_empty();
 
-        // Detect available agent (use test override if available)
-        #[cfg(test)]
-        let detected_agent = self.test_agent_override.clone().or_else(detect_agent);
-        #[cfg(not(test))]
-        let detected_agent = detect_agent();
-
-        let agent_command = match detected_agent {
-            Some(agent) => agent,
-            None => {
-                // Reset state to idle since we can't run
-                {
-                    let mut state = self.state.write().await;
-                    state.execution_state = ExecutionState::Idle;
-                }
+        if is_running || has_backlog {
+            if state.run_queue.len() >= self.queue_capacity {
                 let response = create_run_error_response(&RunStoryError::ExecutionError(
-                    "No agent CLI found. Install Claude Code CLI (claude), Codex CLI (codex), or Amp CLI (amp)."
-                        .to_string(),
+                    format!(
+                        "Execution queue is full (capacity {}). Try again later.",
+                        self.queue_capacity
+                    ),
                 ));
                 return serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
                     format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
                 });
             }
-        };
 
-        // Get project root from PRD path
-        let project_root = prd_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-        // Progress file path (in same directory as PRD)
-        let progress_path = project_root.join("progress.txt");
-
-        // Create executor config
-        let executor_config = ExecutorConfig {
-            prd_path: prd_path.clone(),
-            project_root: project_root.clone(),
-            progress_path,
-            quality_profile: self
-                .config
-                .as_ref()
-                .as_ref()
-                .map(|c| c.profiles.get("standard").cloned().unwrap_or_default()),
-            agent_command,
-            max_iterations,
-            git_mutex: None, // MCP server executes single story at a time
-            timeout_config: crate::timeout::TimeoutConfig::default(),
-            ..Default::default()
-        };
-
-        // Clone necessary data for the spawned task
-        let story_id = req.story_id.clone();
-        let state = self.state.clone();
-        let cancel_receiver = self.cancel_receiver();
-        let display = self.display.clone();
-
-        // Spawn async task to execute the story
-        tokio::spawn(async move {
-            let executor = StoryExecutor::new(executor_config);
-
-            // Iteration callback to update state
-            let state_for_callback = state.clone();
-            let on_iteration = move |iteration: u32, _max: u32| {
-                let state_clone = state_for_callback.clone();
-                tokio::spawn(async move {
-                    let mut server_state = state_clone.write().await;
-                    if let ExecutionState::Running {
-                        iteration: iter, ..
-                    } = &mut server_state.execution_state
-                    {
-                        *iter = iteration;
-                    }
-                });
-            };
-
-            // Execute the story
-            match executor
-                .execute_story(&story_id, cancel_receiver, on_iteration)
-                .await
+            if let Some(position) = state
+                .run_queue
+                .iter()
+                .position(|queued| queued.story_id == req.story_id)
             {
-                Ok(result) => {
-                    // Update state to Completed
-                    let mut server_state = state.write().await;
-                    server_state.execution_state = ExecutionState::Completed {
-                        story_id: story_id.clone(),
-                        commit_hash: result.commit_hash,
-                    };
-
-                    // Update display
-                    drop(server_state);
-                    if let Ok(mut disp) = display.try_write() {
-                        let completed_state = ExecutionState::Completed {
-                            story_id: story_id.clone(),
-                            commit_hash: None,
-                        };
-                        disp.update_from_state(&completed_state, None);
-                    }
-                }
-                Err(e) => {
-                    // Update state to Failed
-                    let mut server_state = state.write().await;
-                    server_state.execution_state = ExecutionState::Failed {
-                        story_id: story_id.clone(),
-                        error: e.to_string(),
-                    };
-
-                    // Update display
-                    drop(server_state);
-                    if let Ok(mut disp) = display.try_write() {
-                        let failed_state = ExecutionState::Failed {
-                            story_id: story_id.clone(),
-                            error: e.to_string(),
-                        };
-                        disp.update_from_state(&failed_state, None);
-                    }
-                }
+                let response = RunStoryResponse {
+                    success: true,
+                    story_id: Some(req.story_id.clone()),
+                    story_title: Some(story.title.clone()),
+                    commit_hash: None,
+                    queue_position: Some(position + 1),
+                    queue_size: Some(state.run_queue.len()),
+                    message: format!("Story '{}' is already queued", req.story_id),
+                };
+                return serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
+                    format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
+                });
             }
-        });
 
-        // Return started response immediately (execution continues in background)
-        let response = create_started_response(&story, max_iterations);
-        serde_json::to_string_pretty(&response)
-            .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize response: {}\"}}", e))
+            state.run_queue.push_back(QueuedRun {
+                story_id: req.story_id.clone(),
+                max_iterations,
+                enqueued_at: current_timestamp(),
+            });
+            let queue_position = state.run_queue.len();
+            let response = RunStoryResponse {
+                success: true,
+                story_id: Some(req.story_id.clone()),
+                story_title: Some(story.title.clone()),
+                commit_hash: None,
+                queue_position: Some(queue_position),
+                queue_size: Some(state.run_queue.len()),
+                message: format!(
+                    "Queued story '{}' at position {}",
+                    req.story_id, queue_position
+                ),
+            };
+            return serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
+                format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
+            });
+        }
+
+        drop(state);
+
+        match self
+            .start_story_execution(req.story_id.clone(), max_iterations)
+            .await
+        {
+            Ok(response) => serde_json::to_string_pretty(&response)
+                .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)),
+            Err(e) => {
+                let response = create_run_error_response(&e);
+                serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
+                    format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
+                })
+            }
+        }
     }
 
     /// Stop the currently executing story.
@@ -1927,12 +2083,9 @@ mod tests {
 
         // Parse the result as JSON
         let json: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(json["success"], false);
-        assert!(json["message"]
-            .as_str()
-            .unwrap()
-            .contains("Already executing"));
-        assert!(json["message"].as_str().unwrap().contains("US-001"));
+        assert_eq!(json["success"], true);
+        assert!(json["message"].as_str().unwrap().contains("Queued"));
+        assert_eq!(json["queue_position"], 1);
     }
 
     #[tokio::test]

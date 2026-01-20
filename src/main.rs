@@ -392,6 +392,8 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             };
 
+            server.start_queue_worker();
+
             // Start the MCP server using stdio transport
             let service = server.serve(stdio()).await.map_err(|e| {
                 tracing::error!("Error starting MCP server: {}", e);
