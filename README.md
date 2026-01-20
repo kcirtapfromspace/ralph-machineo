@@ -5,7 +5,7 @@
 
 ![Ralph](ralph-machineo.webp)
 
-Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](), or local llms repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`. Ralph can also run as an MCP server and execute stories in parallel batches.
+Ralph is an autonomous AI agent loop that runs [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, Amp, or local llms repeatedly until all PRD items are complete. Each iteration is a fresh agent instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`. Ralph can also run as an MCP server and execute stories in parallel batches.
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 [Read Ryan Carson in-depth article on how he use Ralph](https://x.com/ryancarson/status/2008548371712135632)
@@ -13,7 +13,7 @@ Orignally forked from [snarktank/ralph](https://github.com/snarktank/ralph)
 
 ## Prerequisites
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, or Codex CLI in PATH
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), Codex CLI, or Amp CLI in PATH
 - Optional: local Ollama server for OSS models (e.g. `~/off-quant` with `tilt up`)
 - [Rust](https://rustup.rs) (for building from source)
 - A git repository for your project
@@ -23,7 +23,14 @@ Orignally forked from [snarktank/ralph](https://github.com/snarktank/ralph)
 ### Homebrew (macOS/Linux)
 
 ```bash
+brew tap kcirtapfromspace/ralph
 brew install ralph
+```
+
+Or in one command:
+
+```bash
+brew install kcirtapfromspace/ralph/ralph
 ```
 
 ### Build from Source
@@ -78,6 +85,7 @@ Options:
   -d, --dir <PATH>       Working directory (default: current directory)
   -p, --prompt <FILE>    Custom prompt file
   -n, --iterations <N>   Max iterations (default: 10)
+  --agent <CMD>          Agent command (claude, codex, amp, or custom)
   -h, --help             Show help
   -V, --version          Show version
 
@@ -86,6 +94,7 @@ Examples:
   ralph 20               Run with 20 max iterations
   ralph -d ./my-project  Run in specified directory
   ralph init             Create prd.json template
+  ralph --agent amp      Run with Amp CLI
 ```
 
 ## Codex + local models (Ollama)
