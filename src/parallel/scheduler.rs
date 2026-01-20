@@ -382,7 +382,10 @@ impl ParallelRunner {
             );
             // Set the max workers for display
             display.set_max_workers(self.config.max_concurrency);
-            display.set_queue_info(self.config.queue_capacity, self.config.queue_policy.as_label());
+            display.set_queue_info(
+                self.config.queue_capacity,
+                self.config.queue_policy.as_label(),
+            );
 
             // Initialize display with story information
             let story_infos: Vec<_> = prd
@@ -457,8 +460,7 @@ impl ParallelRunner {
                             display.story_sequential_retry(story_id, story_id, reason);
                         }
                         ParallelUIEvent::GateUpdate { .. }
-                        | ParallelUIEvent::ReconciliationStatus { .. }
-                        | ParallelUIEvent::QueueStatus { .. } => {
+                        | ParallelUIEvent::ReconciliationStatus { .. } => {
                             // These events don't have direct display methods yet
                         }
                         ParallelUIEvent::KeyboardToggle { .. }
@@ -518,6 +520,7 @@ impl ParallelRunner {
             // Pre-execution conflict detection: filter out lower-priority stories
             // that have overlapping target_files with higher-priority stories
             let (ready_stories, conflicts) = filter_conflicting_stories(ready_stories);
+            let ready_empty = ready_stories.is_empty();
 
             // Send ConflictDeferred events when stories are deferred due to conflicts
             for (deferred_id, higher_priority_id) in &conflicts {
@@ -618,7 +621,7 @@ impl ParallelRunner {
             }
 
             // Check if we're done or stuck
-            if ready_stories.is_empty() && in_flight.is_empty() {
+            if ready_empty && in_flight.is_empty() {
                 // No more stories to run and none in flight
                 let state = self.execution_state.read().await;
                 let stories_passed = state.completed.len();
