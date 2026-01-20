@@ -126,7 +126,7 @@ pub struct ServerState {
     /// Audit states indexed by audit ID
     pub audit_states: HashMap<String, AuditState>,
     /// Pending story executions waiting for a slot
-    pub run_queue: VecDeque<QueuedRun>,
+    run_queue: VecDeque<QueuedRun>,
     /// Recent execution durations (seconds) for ETA estimates
     pub recent_durations: VecDeque<u64>,
 }
@@ -372,10 +372,7 @@ impl RalphMcpServer {
 
     /// Start the queue worker that drains queued MCP run requests.
     pub fn start_queue_worker(&self) {
-        if self
-            .queue_worker_started
-            .swap(true, Ordering::SeqCst)
-        {
+        if self.queue_worker_started.swap(true, Ordering::SeqCst) {
             return;
         }
 
@@ -518,11 +515,11 @@ impl RalphMcpServer {
                         let started_at = {
                             let server_state = state.read().await;
                             match &server_state.execution_state {
-                                ExecutionState::Running { story_id: running_id, started_at, .. }
-                                    if running_id == &story_id =>
-                                {
-                                    Some(*started_at)
-                                }
+                                ExecutionState::Running {
+                                    story_id: running_id,
+                                    started_at,
+                                    ..
+                                } if running_id == &story_id => Some(*started_at),
                                 _ => None,
                             }
                         };
@@ -793,7 +790,11 @@ impl RalphMcpServer {
 
         let now = current_timestamp();
         let (running_story_id, running_started_at, running_elapsed_secs) = match execution_state {
-            ExecutionState::Running { story_id, started_at, .. } => {
+            ExecutionState::Running {
+                story_id,
+                started_at,
+                ..
+            } => {
                 let elapsed = now.saturating_sub(started_at);
                 (Some(story_id), Some(started_at), Some(elapsed))
             }
@@ -962,12 +963,10 @@ impl RalphMcpServer {
 
         if is_running || has_backlog {
             if state.run_queue.len() >= self.queue_capacity {
-                let response = create_run_error_response(&RunStoryError::ExecutionError(
-                    format!(
-                        "Execution queue is full (capacity {}). Try again later.",
-                        self.queue_capacity
-                    ),
-                ));
+                let response = create_run_error_response(&RunStoryError::ExecutionError(format!(
+                    "Execution queue is full (capacity {}). Try again later.",
+                    self.queue_capacity
+                )));
                 return serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
                     format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
                 });
@@ -1021,8 +1020,9 @@ impl RalphMcpServer {
             .start_story_execution(req.story_id.clone(), max_iterations)
             .await
         {
-            Ok(response) => serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|e| format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)),
+            Ok(response) => serde_json::to_string_pretty(&response).unwrap_or_else(|e| {
+                format!("{{\"error\": \"Failed to serialize response: {}\"}}", e)
+            }),
             Err(e) => {
                 let response = create_run_error_response(&e);
                 serde_json::to_string_pretty(&response).unwrap_or_else(|e| {

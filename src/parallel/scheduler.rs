@@ -382,7 +382,10 @@ impl ParallelRunner {
             );
             // Set the max workers for display
             display.set_max_workers(self.config.max_concurrency);
-            display.set_queue_info(self.config.queue_capacity, self.config.queue_policy.as_label());
+            display.set_queue_info(
+                self.config.queue_capacity,
+                self.config.queue_policy.as_label(),
+            );
 
             // Initialize display with story information
             let story_infos: Vec<_> = prd
