@@ -1,0 +1,70 @@
+//! Terminal UI module for Ralph.
+//!
+//! Provides rich terminal output with 24-bit color support,
+//! progress indicators, and interactive displays.
+
+#![allow(unused_imports)]
+
+mod collapsible;
+mod colors;
+mod display;
+mod ghostty;
+mod help;
+mod image_to_ansi;
+mod interrupt;
+mod iteration_view;
+mod keyboard;
+mod kitty_graphics;
+mod mascot;
+pub mod parallel_display;
+pub mod parallel_events;
+pub mod parallel_status;
+mod quality_gates;
+mod spinner;
+mod story_view;
+mod summary;
+pub mod tui;
+mod tui_runner;
+
+pub use collapsible::{
+    CollapsibleIterationSummary, CollapsibleSection, CollapsibleState, StreamingDisplayOptions,
+};
+pub use colors::{
+    active_text, ansi, blinking_text, completed_text, muted_text, primary_text, StyledText, Theme,
+};
+pub use display::{DisplayOptions, RalphDisplay, UiMode};
+pub use ghostty::{
+    file_hyperlink, file_hyperlink_with_line, hyperlink, GhosttyFeatures, SyncGuard,
+    TerminalCapabilities, TitleStatus,
+};
+pub use help::{BuildInfo, CommandInfo, HelpRenderer, COMMANDS, GLOBAL_OPTIONS, RALPH_BANNER};
+pub use image_to_ansi::{
+    list_mascot_images, load_mascot_ansi, random_mascot_ansi, CharacterMode, ColorMode,
+    ConversionConfig, ImageConverter,
+};
+pub use interrupt::{
+    is_globally_interrupted, render_interrupt_panel, reset_global_interrupt, InterruptHandler,
+};
+pub use iteration_view::{
+    ActivityIndicator, GateProgress, GateProgressInfo, GateSummary, IterationPreview,
+    IterationSummary, IterationSummaryStack, LiveIterationPanel,
+};
+pub use keyboard::{
+    render_compact_hint, render_toggle_hint, KeyBindings, KeyboardListener, ListenerHandle,
+    ToggleEvent, ToggleState,
+};
+pub use kitty_graphics::{display_mascot, mascot_inline_string, ImagePlacement, KittyGraphics};
+pub use mascot::{random_image_mascot, AnimationConfig, Mascot, MascotRenderer, PeekAnimation};
+pub use quality_gates::{GateStatus, QualityGateRenderer, QualityGateView};
+pub use spinner::{
+    blink_chars, progress_chars, spinner_chars, BlinkStyle, BlinkingIndicator, IterationProgress,
+    LiveStatusIndicator, ProgressManager, RalphSpinner, SpinnerStyle,
+};
+pub use story_view::{StoryInfo, StoryView, StoryViewState};
+pub use summary::{ExecutionSummary, GateStatistics, StoryResult, SummaryRenderer};
+pub use tui_runner::TuiRunnerDisplay;
+
+// Parallel execution UI
+pub use parallel_display::ParallelRunnerDisplay;
+pub use parallel_events::{ParallelUIEvent, StoryDisplayInfo, StoryStatus};
+pub use parallel_status::{ParallelExecutionState, ParallelStatusRenderer, StoryExecutionState};

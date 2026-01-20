@@ -1,0 +1,46 @@
+{
+  "branchName": "test/feature-branch",
+  "description": "A test PRD for integration testing of the Ralph autonomous agent framework",
+  "project": "TestProject",
+  "userStories": [
+    {
+      "acceptanceCriteria": [
+        "Function returns 'Hello, World!'",
+        "Function is exported from main module",
+        "Unit tests pass"
+      ],
+      "description": "As a developer, I need a simple hello world function for testing purposes.",
+      "id": "TEST-001",
+      "notes": "This is the first test story",
+      "passes": true,
+      "priority": 1,
+      "title": "Create hello world function"
+    },
+    {
+      "acceptanceCriteria": [
+        "Config file is parsed correctly",
+        "Invalid config returns descriptive error",
+        "Default values are applied for missing fields"
+      ],
+      "description": "As a developer, I need to load configuration from a TOML file.",
+      "id": "TEST-002",
+      "notes": "This story is already passing",
+      "passes": true,
+      "priority": 2,
+      "title": "Add configuration loading"
+    },
+    {
+      "acceptanceCriteria": [
+        "Logs are written to stderr",
+        "Log level is configurable",
+        "Timestamps are included"
+      ],
+      "description": "As a developer, I need logging middleware for debugging.",
+      "id": "TEST-003",
+      "notes": "",
+      "passes": false,
+      "priority": 3,
+      "title": "Implement logging middleware"
+    }
+  ]
+}
