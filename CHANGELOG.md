@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0](https://github.com/kcirtapfromspace/ralph/compare/v0.2.0...v0.3.0) (2026-01-19)
+## [0.1.0](https://github.com/kcirtapfromspace/ralph-machineo/compare/v0.0.0...v0.1.0) (2026-01-19)
 
 
 ### Features
