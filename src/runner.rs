@@ -3,14 +3,17 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 use tokio::sync::watch;
 
 use chrono::Utc;
 
 use crate::checkpoint::{Checkpoint, CheckpointManager, PauseReason, StoryCheckpoint};
 use crate::error::classification::ErrorCategory;
+use crate::evidence::{error_category_label, generate_run_id, EvidenceWriter};
 use crate::mcp::tools::executor::{detect_agent, ExecutorConfig, StoryExecutor};
 use crate::mcp::tools::load_prd::{PrdFile, PrdUserStory};
+use crate::metrics::{RunMetricsCollector, RunMetricsStore};
 use crate::notification::Notification;
 use crate::parallel::scheduler::ParallelRunnerConfig;
 use crate::ui::{DisplayOptions, TuiRunnerDisplay};
@@ -142,10 +145,38 @@ impl Runner {
     /// Run all stories sequentially until all pass or an error occurs
     async fn run_sequential(&self) -> RunResult {
         let mut total_iterations: u32 = 0;
+        let run_id = generate_run_id();
+        let run_metrics = RunMetricsCollector::new(run_id.clone(), 0);
+        let metrics_store = match RunMetricsStore::new(&self.config.working_dir) {
+            Ok(store) => Some(store),
+            Err(err) => {
+                eprintln!("Warning: Failed to initialize run metrics store: {}", err);
+                None
+            }
+        };
+        let save_metrics = |collector: &RunMetricsCollector| {
+            if let Some(store) = metrics_store.as_ref() {
+                let metrics = collector.finish();
+                if let Err(err) = store.save(&metrics) {
+                    eprintln!("Warning: Failed to save run metrics: {}", err);
+                }
+            }
+        };
 
         // Create TUI display with display options
         let mut display =
             TuiRunnerDisplay::with_display_options(self.config.display_options.clone());
+
+        let mut evidence = match EvidenceWriter::try_new(&self.config.working_dir, run_id.clone()) {
+            Ok(mut writer) => {
+                writer.emit_run_start();
+                Some(writer)
+            }
+            Err(err) => {
+                eprintln!("Warning: Failed to initialize evidence writer: {}", err);
+                None
+            }
+        };
 
         // Handle checkpoint resume at startup
         let resume_from = self.handle_checkpoint_resume();
@@ -154,6 +185,14 @@ impl Runner {
         let prd = match self.load_prd() {
             Ok(prd) => prd,
             Err(e) => {
+                if let Some(writer) = evidence.as_mut() {
+                    writer.emit_run_complete(
+                        "failed",
+                        Some("fatal".to_string()),
+                        Some(format!("Failed to load PRD: {}", e)),
+                    );
+                }
+                save_metrics(&run_metrics);
                 return RunResult {
                     all_passed: false,
                     stories_passed: 0,
@@ -165,6 +204,8 @@ impl Runner {
         };
 
         let total_stories = prd.user_stories.len();
+        let expected_steps = prd.user_stories.iter().filter(|s| !s.passes).count();
+        run_metrics.set_expected_steps(expected_steps);
 
         // Initialize display with story list
         let story_status: Vec<(String, bool)> = prd
@@ -178,6 +219,10 @@ impl Runner {
         let passing_count = prd.user_stories.iter().filter(|s| s.passes).count();
         if passing_count == total_stories {
             display.display_all_complete(total_stories);
+            if let Some(writer) = evidence.as_mut() {
+                writer.emit_run_complete("success", None, None);
+            }
+            save_metrics(&run_metrics);
             return RunResult {
                 all_passed: true,
                 stories_passed: total_stories,
@@ -191,6 +236,17 @@ impl Runner {
         let agent = match self.config.agent_command.clone().or_else(detect_agent) {
             Some(a) => a,
             None => {
+                if let Some(writer) = evidence.as_mut() {
+                    writer.emit_run_complete(
+                        "failed",
+                        Some("fatal".to_string()),
+                        Some(
+                            "No agent found. Install Claude Code CLI, Codex CLI, or Amp CLI."
+                                .to_string(),
+                        ),
+                    );
+                }
+                save_metrics(&run_metrics);
                 return RunResult {
                     all_passed: false,
                     stories_passed: passing_count,
@@ -227,6 +283,14 @@ impl Runner {
             let prd = match self.load_prd() {
                 Ok(prd) => prd,
                 Err(e) => {
+                    if let Some(writer) = evidence.as_mut() {
+                        writer.emit_run_complete(
+                            "failed",
+                            Some("fatal".to_string()),
+                            Some(format!("Failed to reload PRD: {}", e)),
+                        );
+                    }
+                    save_metrics(&run_metrics);
                     return RunResult {
                         all_passed: false,
                         stories_passed: self.count_passing_stories().unwrap_or(0),
@@ -271,6 +335,10 @@ impl Runner {
                     // All stories pass! Clear checkpoint on full completion.
                     self.clear_checkpoint();
                     display.display_all_complete(total_stories);
+                    if let Some(writer) = evidence.as_mut() {
+                        writer.emit_run_complete("success", None, None);
+                    }
+                    save_metrics(&run_metrics);
                     return RunResult {
                         all_passed: true,
                         stories_passed: total_stories,
@@ -294,6 +362,17 @@ impl Runner {
                                 self.config.max_total_iterations
                             )),
                         );
+                        if let Some(writer) = evidence.as_mut() {
+                            writer.emit_run_complete(
+                                "failed",
+                                Some("fatal".to_string()),
+                                Some(format!(
+                                    "Max total iterations ({}) reached",
+                                    self.config.max_total_iterations
+                                )),
+                            );
+                        }
+                        save_metrics(&run_metrics);
                         return RunResult {
                             all_passed: false,
                             stories_passed: self.count_passing_stories().unwrap_or(0),
@@ -333,6 +412,8 @@ impl Runner {
                     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
                     let story_id = story.id.clone();
+                    run_metrics.start_step(&story_id);
+                    let step_start = Instant::now();
 
                     // Save checkpoint before starting story execution (for recovery if interrupted)
                     self.save_checkpoint(
@@ -360,9 +441,21 @@ impl Runner {
                             if exec_result.success {
                                 // Clear checkpoint on successful story completion
                                 self.clear_checkpoint();
+                                if let Some(writer) = evidence.as_mut() {
+                                    writer.emit_step(&story_id, "completed", None, None);
+                                    run_metrics.record_evidence_step(&story_id);
+                                }
+                                let duration = step_start.elapsed();
+                                let attempts = exec_result.iterations_used.max(1);
+                                run_metrics
+                                    .complete_step(&story_id, true, attempts, duration, None);
                                 display
                                     .complete_story(&story_id, exec_result.commit_hash.as_deref());
                             } else {
+                                let error_message = exec_result
+                                    .error
+                                    .clone()
+                                    .unwrap_or_else(|| "Quality gates failed".to_string());
                                 // Save checkpoint on story failure (quality gates didn't pass)
                                 let final_iteration =
                                     start_iteration + exec_result.iterations_used - 1;
@@ -370,22 +463,49 @@ impl Runner {
                                     &story_id,
                                     final_iteration,
                                     max_iterations,
-                                    PauseReason::Error(
-                                        exec_result
-                                            .error
-                                            .clone()
-                                            .unwrap_or_else(|| "Quality gates failed".to_string()),
-                                    ),
+                                    PauseReason::Error(error_message.clone()),
                                 );
-                                display.fail_story(
+                                if let Some(writer) = evidence.as_mut() {
+                                    writer.emit_step(
+                                        &story_id,
+                                        "failed",
+                                        Some("quality_gates_failed".to_string()),
+                                        Some(error_message.clone()),
+                                    );
+                                    run_metrics.record_evidence_step(&story_id);
+                                }
+                                let duration = step_start.elapsed();
+                                let attempts = exec_result.iterations_used.max(1);
+                                run_metrics.complete_step(
                                     &story_id,
-                                    exec_result.error.as_deref().unwrap_or("unknown"),
+                                    false,
+                                    attempts,
+                                    duration,
+                                    Some(error_message.clone()),
                                 );
+                                display.fail_story(&story_id, error_message.as_str());
                             }
                         }
                         Err(e) => {
                             // Classify the error using ErrorDetector
                             let category = e.classify();
+                            if let Some(writer) = evidence.as_mut() {
+                                writer.emit_step(
+                                    &story_id,
+                                    "failed",
+                                    Some(error_category_label(&category).to_string()),
+                                    Some(e.to_string()),
+                                );
+                                run_metrics.record_evidence_step(&story_id);
+                            }
+                            let duration = step_start.elapsed();
+                            run_metrics.complete_step(
+                                &story_id,
+                                false,
+                                1,
+                                duration,
+                                Some(e.to_string()),
+                            );
 
                             // Handle based on error category
                             match &category {
@@ -421,6 +541,14 @@ impl Runner {
                                     );
                                     display.fail_story(&story_id, &e.to_string());
                                     // Return immediately - user needs to wait or upgrade
+                                    if let Some(writer) = evidence.as_mut() {
+                                        writer.emit_run_complete(
+                                            "failed",
+                                            Some(error_category_label(&category).to_string()),
+                                            Some(format!("Usage limit exceeded: {}", e)),
+                                        );
+                                    }
+                                    save_metrics(&run_metrics);
                                     return RunResult {
                                         all_passed: false,
                                         stories_passed: self.count_passing_stories().unwrap_or(0),
@@ -441,6 +569,14 @@ impl Runner {
                                     );
                                     display.fail_story(&story_id, &e.to_string());
                                     // Return immediately - error is unrecoverable
+                                    if let Some(writer) = evidence.as_mut() {
+                                        writer.emit_run_complete(
+                                            "failed",
+                                            Some(error_category_label(&category).to_string()),
+                                            Some(format!("Fatal error: {}", e)),
+                                        );
+                                    }
+                                    save_metrics(&run_metrics);
                                     return RunResult {
                                         all_passed: false,
                                         stories_passed: self.count_passing_stories().unwrap_or(0),
@@ -464,6 +600,14 @@ impl Runner {
                                     );
                                     display.fail_story(&story_id, &e.to_string());
                                     // Return with checkpoint info
+                                    if let Some(writer) = evidence.as_mut() {
+                                        writer.emit_run_complete(
+                                            "failed",
+                                            Some(error_category_label(&category).to_string()),
+                                            Some(format!("Timeout: {}", e)),
+                                        );
+                                    }
+                                    save_metrics(&run_metrics);
                                     return RunResult {
                                         all_passed: false,
                                         stories_passed: self.count_passing_stories().unwrap_or(0),

@@ -7,8 +7,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch, Mutex, RwLock, Semaphore};
 
+use crate::evidence::{error_category_label, generate_run_id, EvidenceWriter};
 use crate::mcp::tools::executor::{detect_agent, ExecutorConfig, StoryExecutor};
 use crate::mcp::tools::load_prd::{validate_prd, PrdFile};
+use crate::metrics::{RunMetricsCollector, RunMetricsStore};
 use crate::parallel::dependency::{DependencyGraph, StoryNode};
 use crate::parallel::reconcile::{ReconciliationEngine, ReconciliationIssue, ReconciliationResult};
 use crate::runner::{RunResult, RunnerConfig};
@@ -282,10 +284,48 @@ impl ParallelRunner {
     /// 4. Waits for any task to complete and updates state
     /// 5. Repeats until all stories pass or cannot make progress
     pub async fn run(&self) -> RunResult {
+        let run_id = generate_run_id();
+        let run_metrics = RunMetricsCollector::new(run_id.clone(), 0);
+        let metrics_store = match RunMetricsStore::new(&self.base_config.working_dir) {
+            Ok(store) => Some(store),
+            Err(err) => {
+                eprintln!("Warning: Failed to initialize run metrics store: {}", err);
+                None
+            }
+        };
+        let save_metrics = |collector: &RunMetricsCollector| {
+            if let Some(store) = metrics_store.as_ref() {
+                let metrics = collector.finish();
+                if let Err(err) = store.save(&metrics) {
+                    eprintln!("Warning: Failed to save run metrics: {}", err);
+                }
+            }
+        };
+
+        let evidence = match EvidenceWriter::try_new(&self.base_config.working_dir, run_id.clone())
+        {
+            Ok(mut writer) => {
+                writer.emit_run_start();
+                Some(Arc::new(Mutex::new(writer)))
+            }
+            Err(err) => {
+                eprintln!("Warning: Failed to initialize evidence writer: {}", err);
+                None
+            }
+        };
+
         // Load and validate PRD
         let prd = match self.load_prd() {
             Ok(prd) => prd,
             Err(e) => {
+                emit_run_complete(
+                    &evidence,
+                    "failed",
+                    Some("fatal".to_string()),
+                    Some(format!("Failed to load PRD: {}", e)),
+                )
+                .await;
+                save_metrics(&run_metrics);
                 return RunResult {
                     all_passed: false,
                     stories_passed: 0,
@@ -308,6 +348,14 @@ impl ParallelRunner {
 
         // Validate graph for cycles
         if let Err(e) = graph.validate() {
+            emit_run_complete(
+                &evidence,
+                "failed",
+                Some("fatal".to_string()),
+                Some(format!("Invalid dependency graph: {}", e)),
+            )
+            .await;
+            save_metrics(&run_metrics);
             return RunResult {
                 all_passed: false,
                 stories_passed: 0,
@@ -324,6 +372,8 @@ impl ParallelRunner {
             .filter(|s| s.passes)
             .map(|s| s.id.clone())
             .collect();
+        let expected_steps = total_stories.saturating_sub(initially_passing.len());
+        run_metrics.set_expected_steps(expected_steps);
 
         // Initialize completed set with already passing stories
         {
@@ -341,6 +391,8 @@ impl ParallelRunner {
                 );
                 display.display_completion(total_stories, total_stories, 0);
             }
+            emit_run_complete(&evidence, "success", None, None).await;
+            save_metrics(&run_metrics);
             return RunResult {
                 all_passed: true,
                 stories_passed: total_stories,
@@ -354,6 +406,17 @@ impl ParallelRunner {
         let agent = match self.base_config.agent_command.clone().or_else(detect_agent) {
             Some(a) => a,
             None => {
+                emit_run_complete(
+                    &evidence,
+                    "failed",
+                    Some("fatal".to_string()),
+                    Some(
+                        "No agent found. Install Claude Code CLI, Codex CLI, or Amp CLI."
+                            .to_string(),
+                    ),
+                )
+                .await;
+                save_metrics(&run_metrics);
                 return RunResult {
                     all_passed: false,
                     stories_passed: initially_passing.len(),
@@ -567,6 +630,23 @@ impl ParallelRunner {
                                 story.id.clone(),
                                 "Queue full - rejected by backpressure policy".to_string(),
                             );
+                            run_metrics.start_step(&story.id);
+                            run_metrics.complete_step(
+                                &story.id,
+                                false,
+                                1,
+                                Duration::ZERO,
+                                Some("Queue full - rejected by backpressure policy".to_string()),
+                            );
+                            emit_step_event(
+                                &evidence,
+                                &run_metrics,
+                                &story.id,
+                                "failed",
+                                Some("queue_full".to_string()),
+                                Some("Queue full - rejected by backpressure policy".to_string()),
+                            )
+                            .await;
                             if let Some(ref sender) = ui_sender {
                                 let event = ParallelUIEvent::StoryFailed {
                                     story_id: story.id.clone(),
@@ -585,6 +665,23 @@ impl ParallelRunner {
                                     dropped.id.clone(),
                                     "Queue full - dropped oldest".to_string(),
                                 );
+                                run_metrics.start_step(&dropped.id);
+                                run_metrics.complete_step(
+                                    &dropped.id,
+                                    false,
+                                    1,
+                                    Duration::ZERO,
+                                    Some("Queue full - dropped oldest".to_string()),
+                                );
+                                emit_step_event(
+                                    &evidence,
+                                    &run_metrics,
+                                    &dropped.id,
+                                    "failed",
+                                    Some("queue_full".to_string()),
+                                    Some("Queue full - dropped oldest".to_string()),
+                                )
+                                .await;
                                 if let Some(ref sender) = ui_sender {
                                     let event = ParallelUIEvent::StoryFailed {
                                         story_id: dropped.id.clone(),
@@ -628,6 +725,22 @@ impl ParallelRunner {
                 let has_failures = !state.failed.is_empty();
                 drop(state);
 
+                emit_run_complete(
+                    &evidence,
+                    if has_failures { "failed" } else { "success" },
+                    if has_failures {
+                        Some("failed_steps".to_string())
+                    } else {
+                        None
+                    },
+                    if has_failures {
+                        Some("Some stories failed".to_string())
+                    } else {
+                        None
+                    },
+                )
+                .await;
+                save_metrics(&run_metrics);
                 return RunResult {
                     all_passed: stories_passed == total_stories,
                     stories_passed,
@@ -713,12 +826,15 @@ impl ParallelRunner {
                     .cloned()
                     .unwrap_or_else(|| StoryDisplayInfo::new(&story_id, &story_id, story.priority));
 
+                let task_evidence = evidence.clone();
+                let task_run_metrics = run_metrics.clone();
                 let handle = tokio::spawn(async move {
                     // Hold the permit until the task completes (RAII)
                     let _permit = permit;
 
                     // Send StoryStarted event
                     let start_time = Instant::now();
+                    task_run_metrics.start_step(&story_id_clone);
                     if let Some(ref sender) = task_ui_sender {
                         let event = ParallelUIEvent::StoryStarted {
                             story: story_info.clone(),
@@ -749,7 +865,8 @@ impl ParallelRunner {
                         })
                         .await;
 
-                    let duration_ms = start_time.elapsed().as_millis() as u64;
+                    let duration = start_time.elapsed();
+                    let duration_ms = duration.as_millis() as u64;
 
                     // Update state based on result
                     let mut state = execution_state.write().await;
@@ -757,7 +874,7 @@ impl ParallelRunner {
                     // Release file locks (success or failure)
                     state.release_locks(&story_id_clone);
 
-                    match result {
+                    let (result_tuple, step_event) = match result {
                         Ok(exec_result) if exec_result.success => {
                             state.completed.insert(story_id_clone.clone());
                             // Send StoryCompleted event
@@ -769,7 +886,18 @@ impl ParallelRunner {
                                 };
                                 let _ = sender.try_send(event);
                             }
-                            (story_id_clone, true, exec_result.iterations_used)
+                            let attempts = exec_result.iterations_used.max(1);
+                            task_run_metrics.complete_step(
+                                &story_id_clone,
+                                true,
+                                attempts,
+                                duration,
+                                None,
+                            );
+                            (
+                                (story_id_clone, true, exec_result.iterations_used),
+                                Some(("completed".to_string(), None, None)),
+                            )
                         }
                         Ok(exec_result) => {
                             let error_msg = exec_result
@@ -782,12 +910,27 @@ impl ParallelRunner {
                             if let Some(ref sender) = task_ui_sender {
                                 let event = ParallelUIEvent::StoryFailed {
                                     story_id: story_id_clone.clone(),
-                                    error: error_msg,
+                                    error: error_msg.clone(),
                                     iteration: exec_result.iterations_used,
                                 };
                                 let _ = sender.try_send(event);
                             }
-                            (story_id_clone, false, exec_result.iterations_used)
+                            let attempts = exec_result.iterations_used.max(1);
+                            task_run_metrics.complete_step(
+                                &story_id_clone,
+                                false,
+                                attempts,
+                                duration,
+                                Some(error_msg.clone()),
+                            );
+                            (
+                                (story_id_clone, false, exec_result.iterations_used),
+                                Some((
+                                    "failed".to_string(),
+                                    Some("quality_gates_failed".to_string()),
+                                    Some(error_msg),
+                                )),
+                            )
                         }
                         Err(e) => {
                             state.failed.insert(story_id_clone.clone(), e.to_string());
@@ -800,10 +943,39 @@ impl ParallelRunner {
                                 };
                                 let _ = sender.try_send(event);
                             }
-                            (story_id_clone, false, 1)
+                            let category = e.classify();
+                            task_run_metrics.complete_step(
+                                &story_id_clone,
+                                false,
+                                1,
+                                duration,
+                                Some(e.to_string()),
+                            );
+                            (
+                                (story_id_clone, false, 1),
+                                Some((
+                                    "failed".to_string(),
+                                    Some(error_category_label(&category).to_string()),
+                                    Some(e.to_string()),
+                                )),
+                            )
                         }
+                    };
+                    drop(state);
+
+                    if let Some((status, error_type, error_message)) = step_event {
+                        emit_step_event(
+                            &task_evidence,
+                            &task_run_metrics,
+                            &result_tuple.0,
+                            &status,
+                            error_type,
+                            error_message,
+                        )
+                        .await;
                     }
                     // Permit is dropped here, releasing the semaphore slot
+                    result_tuple
                 });
 
                 handles.push(handle);
@@ -842,6 +1014,18 @@ impl ParallelRunner {
                                         self.config.batch_timeout
                                     ),
                                 );
+                                emit_step_event(
+                                    &evidence,
+                                    &run_metrics,
+                                    story_id,
+                                    "failed",
+                                    Some("batch_timeout".to_string()),
+                                    Some(format!(
+                                        "Batch timed out after {:?}",
+                                        self.config.batch_timeout
+                                    )),
+                                )
+                                .await;
                                 // Send StoryFailed event
                                 if let Some(ref sender) = ui_sender {
                                     let event = ParallelUIEvent::StoryFailed {
@@ -871,6 +1055,8 @@ impl ParallelRunner {
                         &graph,
                         &agent,
                         &mut total_iterations,
+                        &evidence,
+                        &run_metrics,
                         &ui_sender,
                         &story_info_map,
                     )
@@ -895,12 +1081,15 @@ impl ParallelRunner {
     ///
     /// Returns `None` if reconciliation passed or issues were resolved via sequential retry.
     /// Returns `Some(error)` if reconciliation found issues that couldn't be resolved.
+    #[allow(clippy::too_many_arguments)]
     async fn run_reconciliation(
         &self,
         batch_story_ids: &[String],
         graph: &DependencyGraph,
         agent: &str,
         total_iterations: &mut u32,
+        _evidence: &Option<Arc<Mutex<EvidenceWriter>>>,
+        _run_metrics: &RunMetricsCollector,
         ui_sender: &Option<mpsc::Sender<ParallelUIEvent>>,
         story_info_map: &HashMap<String, StoryDisplayInfo>,
     ) -> Option<String> {
@@ -1193,5 +1382,32 @@ impl ParallelRunner {
     /// Load the PRD file.
     fn load_prd(&self) -> Result<PrdFile, String> {
         validate_prd(&self.base_config.prd_path).map_err(|e| e.to_string())
+    }
+}
+
+async fn emit_run_complete(
+    evidence: &Option<Arc<Mutex<EvidenceWriter>>>,
+    status: &str,
+    error_type: Option<String>,
+    error_message: Option<String>,
+) {
+    if let Some(writer) = evidence.as_ref() {
+        let mut writer = writer.lock().await;
+        writer.emit_run_complete(status, error_type, error_message);
+    }
+}
+
+async fn emit_step_event(
+    evidence: &Option<Arc<Mutex<EvidenceWriter>>>,
+    run_metrics: &RunMetricsCollector,
+    step_id: &str,
+    status: &str,
+    error_type: Option<String>,
+    error_message: Option<String>,
+) {
+    if let Some(writer) = evidence.as_ref() {
+        let mut writer = writer.lock().await;
+        writer.emit_step(step_id, status, error_type, error_message);
+        run_metrics.record_evidence_step(step_id);
     }
 }
