@@ -8,6 +8,271 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Callback trait for receiving agent output in real-time.
+///
+/// Implement this trait to receive streaming output from the agent executor.
+/// The callback is invoked for each line of stdout/stderr from the agent process.
+///
+/// # Thread Safety
+///
+/// Implementations must be `Send + Sync` as the callback may be invoked from
+/// async contexts across different threads.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use ralphmacchio::ui::DisplayCallback;
+///
+/// struct MyDisplay;
+///
+/// impl DisplayCallback for MyDisplay {
+///     fn on_agent_output(&self, line: &str, is_stderr: bool) {
+///         if is_stderr {
+///             eprintln!("[agent stderr] {}", line);
+///         } else {
+///             println!("[agent stdout] {}", line);
+///         }
+///     }
+/// }
+/// ```
+pub trait DisplayCallback: Send + Sync {
+    /// Called when a line of output is received from the agent.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - The line of text from the agent (without trailing newline)
+    /// * `is_stderr` - True if this line came from stderr, false for stdout
+    fn on_agent_output(&self, line: &str, is_stderr: bool);
+
+    /// Called when agent execution starts for a story.
+    ///
+    /// Default implementation does nothing.
+    fn on_agent_started(&self, _story_id: &str, _iteration: u32) {}
+
+    /// Called when agent execution completes.
+    ///
+    /// Default implementation does nothing.
+    fn on_agent_completed(&self, _story_id: &str, _success: bool) {}
+}
+
+use std::io::Write;
+use std::sync::Mutex;
+
+use crate::ui::keyboard::ToggleState;
+
+/// Information about the last detected activity from the agent.
+#[derive(Debug, Clone)]
+pub struct LastActivityInfo {
+    /// When the activity was detected
+    pub timestamp: Instant,
+    /// Human-readable description of the activity
+    pub description: String,
+    /// Whether this came from stderr
+    pub is_stderr: bool,
+}
+
+/// Shared state for activity tracking between callback and display.
+pub type SharedActivityState = Arc<Mutex<Option<LastActivityInfo>>>;
+
+/// Create a new shared activity state.
+pub fn new_shared_activity_state() -> SharedActivityState {
+    Arc::new(Mutex::new(None))
+}
+
+/// A lightweight callback for streaming agent output to the terminal.
+///
+/// This struct implements `DisplayCallback` and can be passed to the executor
+/// to receive real-time output from the agent. It handles:
+/// - Streaming output to terminal when enabled
+/// - Tracking last activity for status indicators
+/// - Respecting toggle state for enabling/disabling streaming
+pub struct StreamingDisplayCallback {
+    /// Shared toggle state for streaming visibility
+    toggle_state: Arc<ToggleState>,
+    /// Whether quiet mode is enabled
+    quiet: bool,
+    /// Whether to use colors
+    use_colors: bool,
+    /// Verbosity level
+    verbosity: u8,
+    /// Last activity from the agent (shared with display)
+    last_activity: SharedActivityState,
+}
+
+impl StreamingDisplayCallback {
+    /// Create a new streaming display callback.
+    pub fn new(toggle_state: Arc<ToggleState>, options: &DisplayOptions) -> Self {
+        Self::with_shared_activity(toggle_state, options, new_shared_activity_state())
+    }
+
+    /// Create a new streaming display callback with a shared activity state.
+    ///
+    /// Use this constructor when you want to share the activity state with other
+    /// components like the display renderer.
+    pub fn with_shared_activity(
+        toggle_state: Arc<ToggleState>,
+        options: &DisplayOptions,
+        shared_activity: SharedActivityState,
+    ) -> Self {
+        Self {
+            toggle_state,
+            quiet: options.quiet,
+            use_colors: options.color.unwrap_or(true),
+            verbosity: options.verbosity,
+            last_activity: shared_activity,
+        }
+    }
+
+    /// Get the shared activity state for passing to other components.
+    pub fn shared_activity(&self) -> SharedActivityState {
+        Arc::clone(&self.last_activity)
+    }
+
+    /// Check if streaming output should be shown.
+    fn should_show_streaming(&self) -> bool {
+        self.toggle_state.should_show_streaming()
+    }
+
+    /// Get the last activity, if any.
+    pub fn get_last_activity(&self) -> Option<LastActivityInfo> {
+        self.last_activity.lock().ok()?.clone()
+    }
+
+    /// Style text as dim.
+    fn style_dim(&self, text: &str) -> String {
+        if self.use_colors {
+            format!("\x1b[38;2;107;114;128m{}\x1b[0m", text)
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// Parse activity from an agent output line.
+    fn parse_activity(&self, line: &str) -> Option<String> {
+        // Detect file read patterns
+        if line.contains("Reading") || line.contains("Read ") || line.starts_with("Read tool") {
+            if let Some(path) = self.extract_path(line) {
+                return Some(format!("📖 Reading {}", path));
+            }
+            return Some("📖 Reading file".to_string());
+        }
+
+        // Detect file write patterns
+        if line.contains("Writing") || line.contains("Write ") || line.contains("Edit ") {
+            if let Some(path) = self.extract_path(line) {
+                return Some(format!("✏️ Writing {}", path));
+            }
+            return Some("✏️ Writing file".to_string());
+        }
+
+        // Detect command execution patterns
+        if line.contains("Running:") || line.contains("Executing:") || line.starts_with("$ ") {
+            let cmd = line
+                .trim_start_matches("Running:")
+                .trim_start_matches("Executing:")
+                .trim_start_matches("$ ")
+                .trim();
+            let truncated = if cmd.len() > 40 {
+                format!("{}...", &cmd[..37])
+            } else {
+                cmd.to_string()
+            };
+            return Some(format!("🔧 Running {}", truncated));
+        }
+
+        // Detect Bash tool usage
+        if line.contains("Bash tool") || line.contains("bash command") {
+            return Some("🔧 Running command".to_string());
+        }
+
+        // Default to thinking for other output
+        if !line.trim().is_empty() {
+            Some("🧠 Thinking".to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Extract a file path from a line of text.
+    fn extract_path(&self, line: &str) -> Option<String> {
+        // Look for common path patterns
+        let path_patterns = ["/", "src/", "tests/", "./"];
+        for pattern in path_patterns {
+            if let Some(start) = line.find(pattern) {
+                let rest = &line[start..];
+                // Find the end of the path (space or end of line)
+                let end = rest.find(' ').unwrap_or(rest.len());
+                let path = &rest[..end];
+                // Truncate long paths
+                if path.len() > 40 {
+                    return Some(format!("...{}", &path[path.len() - 37..]));
+                }
+                return Some(path.to_string());
+            }
+        }
+        None
+    }
+}
+
+impl DisplayCallback for StreamingDisplayCallback {
+    fn on_agent_output(&self, line: &str, is_stderr: bool) {
+        // Update last activity
+        if let Some(desc) = self.parse_activity(line) {
+            if let Ok(mut activity) = self.last_activity.lock() {
+                *activity = Some(LastActivityInfo {
+                    timestamp: Instant::now(),
+                    description: desc,
+                    is_stderr,
+                });
+            }
+        }
+
+        // Stream output to terminal if enabled
+        if self.should_show_streaming() && !self.quiet {
+            // Use dim prefix for output
+            let prefix = self.style_dim("  │ ");
+            // Print with timestamp if verbose
+            if self.verbosity >= 1 {
+                let now = chrono::Local::now();
+                println!(
+                    "{} {}{}",
+                    self.style_dim(&format!("[{}]", now.format("%H:%M:%S"))),
+                    prefix,
+                    line
+                );
+            } else {
+                println!("{}{}", prefix, line);
+            }
+            std::io::stdout().flush().ok();
+        }
+    }
+
+    fn on_agent_started(&self, story_id: &str, _iteration: u32) {
+        // Clear last activity
+        if let Ok(mut activity) = self.last_activity.lock() {
+            *activity = None;
+        }
+
+        if !self.quiet && self.verbosity >= 1 {
+            eprintln!(
+                "{}",
+                self.style_dim(&format!("  [Agent started: {}]", story_id))
+            );
+        }
+    }
+
+    fn on_agent_completed(&self, story_id: &str, success: bool) {
+        if !self.quiet && self.verbosity >= 1 {
+            let status = if success { "completed" } else { "failed" };
+            eprintln!(
+                "{}",
+                self.style_dim(&format!("  [Agent {}: {}]", status, story_id))
+            );
+        }
+    }
+}
+
 use crate::mcp::server::ExecutionState;
 use crate::quality::gates::GateResult;
 use crate::ui::colors::Theme;

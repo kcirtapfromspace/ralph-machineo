@@ -1,0 +1,73 @@
+{
+  "run_id": "run-1768973367003-85330",
+  "started_at": {
+    "secs_since_epoch": 1768973367,
+    "nanos_since_epoch": 3763000
+  },
+  "completed_at": {
+    "secs_since_epoch": 1768973924,
+    "nanos_since_epoch": 593566000
+  },
+  "recorded_at": {
+    "secs_since_epoch": 1768973924,
+    "nanos_since_epoch": 593566000
+  },
+  "run_duration": {
+    "secs": 557,
+    "nanos": 590125875
+  },
+  "expected_steps": 9,
+  "steps_attempted": 2,
+  "steps_completed": 1,
+  "failures": 1,
+  "retries": 0,
+  "completeness_percent": 22.22222222222222,
+  "step_durations": {
+    "US-008": {
+      "secs": 345,
+      "nanos": 86203291
+    },
+    "US-007": {
+      "secs": 210,
+      "nanos": 328533834
+    }
+  },
+  "steps": [
+    {
+      "step_id": "US-007",
+      "attempts": 1,
+      "duration": {
+        "secs": 210,
+        "nanos": 328533834
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768973369,
+        "nanos_since_epoch": 151503000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768973579,
+        "nanos_since_epoch": 479849000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-008",
+      "attempts": 1,
+      "duration": {
+        "secs": 345,
+        "nanos": 86203291
+      },
+      "success": false,
+      "started_at": {
+        "secs_since_epoch": 1768973579,
+        "nanos_since_epoch": 479970000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768973924,
+        "nanos_since_epoch": 566044000
+      },
+      "error": "Execution timed out: Agent 'claude' stalled (no output for 180s) (iteration 1)"
+    }
+  ]
+}

@@ -38,6 +38,12 @@ pub struct TimeoutConfig {
     /// and the first API call before stall detection kicks in.
     /// Default: 120 seconds (2 minutes)
     pub startup_grace_period: Duration,
+
+    /// Maximum time allowed for git operations (clone, pull, push, etc.).
+    /// This timeout applies to individual git commands to prevent them from
+    /// hanging indefinitely in case of network issues or large repositories.
+    /// Default: 60 seconds
+    pub git_timeout: Duration,
 }
 
 impl Default for TimeoutConfig {
@@ -45,9 +51,10 @@ impl Default for TimeoutConfig {
         Self {
             agent_timeout: Duration::from_secs(600),
             iteration_timeout: Duration::from_secs(900),
-            heartbeat_interval: Duration::from_secs(45),
-            missed_heartbeats_threshold: 4,
+            heartbeat_interval: Duration::from_secs(60),
+            missed_heartbeats_threshold: 5,
             startup_grace_period: Duration::from_secs(120),
+            git_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -65,6 +72,7 @@ impl TimeoutConfig {
         heartbeat_interval: Duration,
         missed_heartbeats_threshold: u32,
         startup_grace_period: Duration,
+        git_timeout: Duration,
     ) -> Self {
         Self {
             agent_timeout,
@@ -72,6 +80,7 @@ impl TimeoutConfig {
             heartbeat_interval,
             missed_heartbeats_threshold,
             startup_grace_period,
+            git_timeout,
         }
     }
 
@@ -106,6 +115,14 @@ impl TimeoutConfig {
         self.startup_grace_period = grace_period;
         self
     }
+
+    /// Sets the git operation timeout.
+    /// This timeout applies to individual git commands (clone, pull, push, etc.)
+    /// to prevent them from hanging indefinitely.
+    pub fn with_git_timeout(mut self, timeout: Duration) -> Self {
+        self.git_timeout = timeout;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -127,19 +144,25 @@ mod tests {
     #[test]
     fn test_default_heartbeat_interval() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.heartbeat_interval, Duration::from_secs(45));
+        assert_eq!(config.heartbeat_interval, Duration::from_secs(60));
     }
 
     #[test]
     fn test_default_missed_heartbeats_threshold() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.missed_heartbeats_threshold, 4);
+        assert_eq!(config.missed_heartbeats_threshold, 5);
     }
 
     #[test]
     fn test_default_startup_grace_period() {
         let config = TimeoutConfig::default();
         assert_eq!(config.startup_grace_period, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn test_default_git_timeout() {
+        let config = TimeoutConfig::default();
+        assert_eq!(config.git_timeout, Duration::from_secs(60));
     }
 
     #[test]
@@ -157,6 +180,7 @@ mod tests {
             Duration::from_secs(10),
             5,
             Duration::from_secs(60),
+            Duration::from_secs(45),
         );
 
         assert_eq!(config.agent_timeout, Duration::from_secs(120));
@@ -164,6 +188,7 @@ mod tests {
         assert_eq!(config.heartbeat_interval, Duration::from_secs(10));
         assert_eq!(config.missed_heartbeats_threshold, 5);
         assert_eq!(config.startup_grace_period, Duration::from_secs(60));
+        assert_eq!(config.git_timeout, Duration::from_secs(45));
     }
 
     #[test]
@@ -173,13 +198,15 @@ mod tests {
             .with_iteration_timeout(Duration::from_secs(600))
             .with_heartbeat_interval(Duration::from_secs(15))
             .with_missed_heartbeats_threshold(5)
-            .with_startup_grace_period(Duration::from_secs(90));
+            .with_startup_grace_period(Duration::from_secs(90))
+            .with_git_timeout(Duration::from_secs(30));
 
         assert_eq!(config.agent_timeout, Duration::from_secs(300));
         assert_eq!(config.iteration_timeout, Duration::from_secs(600));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(15));
         assert_eq!(config.missed_heartbeats_threshold, 5);
         assert_eq!(config.startup_grace_period, Duration::from_secs(90));
+        assert_eq!(config.git_timeout, Duration::from_secs(30));
     }
 
     #[test]
