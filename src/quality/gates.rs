@@ -12,6 +12,134 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Category of a quality gate failure.
+///
+/// Represents the type of check that failed, allowing downstream code
+/// to programmatically handle different failure types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCategory {
+    /// Code linting failure (e.g., clippy warnings)
+    Lint,
+    /// Type checking failure (e.g., compilation errors)
+    TypeCheck,
+    /// Test failure (e.g., unit or integration tests)
+    Test,
+    /// Code formatting failure (e.g., rustfmt issues)
+    Format,
+    /// Security vulnerability detected (e.g., cargo-audit findings)
+    Security,
+    /// Code coverage below threshold
+    Coverage,
+}
+
+/// Structured details about a quality gate failure.
+///
+/// Provides programmatic access to failure information, including
+/// source location, error codes, and remediation suggestions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateFailureDetail {
+    /// File path where the failure occurred (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+
+    /// Line number where the failure occurred (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+
+    /// Column number where the failure occurred (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+
+    /// Error code or identifier (e.g., "E0382", "clippy::unwrap_used")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+
+    /// Category of the failure
+    pub category: FailureCategory,
+
+    /// Human-readable message describing the failure
+    pub message: String,
+
+    /// Suggested fix or remediation action
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+
+    /// URL to documentation about this type of failure
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_url: Option<String>,
+}
+
+impl GateFailureDetail {
+    /// Create a new gate failure detail with required fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `category` - The category of failure
+    /// * `message` - Human-readable description of the failure
+    pub fn new(category: FailureCategory, message: impl Into<String>) -> Self {
+        Self {
+            file: None,
+            line: None,
+            column: None,
+            error_code: None,
+            category,
+            message: message.into(),
+            suggestion: None,
+            doc_url: None,
+        }
+    }
+
+    /// Set the file path where the failure occurred.
+    pub fn with_file(mut self, file: impl Into<String>) -> Self {
+        self.file = Some(file.into());
+        self
+    }
+
+    /// Set the line number where the failure occurred.
+    pub fn with_line(mut self, line: u32) -> Self {
+        self.line = Some(line);
+        self
+    }
+
+    /// Set the column number where the failure occurred.
+    pub fn with_column(mut self, column: u32) -> Self {
+        self.column = Some(column);
+        self
+    }
+
+    /// Set the source location (file, line, column) where the failure occurred.
+    pub fn with_location(
+        mut self,
+        file: impl Into<String>,
+        line: u32,
+        column: Option<u32>,
+    ) -> Self {
+        self.file = Some(file.into());
+        self.line = Some(line);
+        self.column = column;
+        self
+    }
+
+    /// Set the error code or identifier.
+    pub fn with_error_code(mut self, error_code: impl Into<String>) -> Self {
+        self.error_code = Some(error_code.into());
+        self
+    }
+
+    /// Set the suggested fix or remediation action.
+    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+
+    /// Set the documentation URL.
+    pub fn with_doc_url(mut self, doc_url: impl Into<String>) -> Self {
+        self.doc_url = Some(doc_url.into());
+        self
+    }
+}
+
 /// Progress state for a quality gate.
 ///
 /// Used in progress callbacks to report gate status changes.
@@ -1774,6 +1902,224 @@ error: critical issue
             } else {
                 assert_eq!(*state, GateProgressState::Failed);
             }
+        }
+    }
+
+    // ========================================================================
+    // FailureCategory Tests
+    // ========================================================================
+
+    #[test]
+    fn test_failure_category_serialization_roundtrip() {
+        let categories = [
+            FailureCategory::Lint,
+            FailureCategory::TypeCheck,
+            FailureCategory::Test,
+            FailureCategory::Format,
+            FailureCategory::Security,
+            FailureCategory::Coverage,
+        ];
+
+        for category in &categories {
+            let json = serde_json::to_string(category).expect("Failed to serialize");
+            let deserialized: FailureCategory =
+                serde_json::from_str(&json).expect("Failed to deserialize");
+            assert_eq!(*category, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_failure_category_snake_case_serialization() {
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::Lint).unwrap(),
+            "\"lint\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::TypeCheck).unwrap(),
+            "\"type_check\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::Test).unwrap(),
+            "\"test\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::Format).unwrap(),
+            "\"format\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::Security).unwrap(),
+            "\"security\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FailureCategory::Coverage).unwrap(),
+            "\"coverage\""
+        );
+    }
+
+    // ========================================================================
+    // GateFailureDetail Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gate_failure_detail_new() {
+        let detail = GateFailureDetail::new(FailureCategory::Lint, "Unused variable");
+        assert_eq!(detail.category, FailureCategory::Lint);
+        assert_eq!(detail.message, "Unused variable");
+        assert!(detail.file.is_none());
+        assert!(detail.line.is_none());
+        assert!(detail.column.is_none());
+        assert!(detail.error_code.is_none());
+        assert!(detail.suggestion.is_none());
+        assert!(detail.doc_url.is_none());
+    }
+
+    #[test]
+    fn test_gate_failure_detail_builder_methods() {
+        let detail = GateFailureDetail::new(FailureCategory::TypeCheck, "Type mismatch")
+            .with_file("src/main.rs")
+            .with_line(42)
+            .with_column(10)
+            .with_error_code("E0308")
+            .with_suggestion("Expected i32, found String")
+            .with_doc_url("https://doc.rust-lang.org/error-index.html#E0308");
+
+        assert_eq!(detail.file, Some("src/main.rs".to_string()));
+        assert_eq!(detail.line, Some(42));
+        assert_eq!(detail.column, Some(10));
+        assert_eq!(detail.error_code, Some("E0308".to_string()));
+        assert_eq!(detail.category, FailureCategory::TypeCheck);
+        assert_eq!(detail.message, "Type mismatch");
+        assert_eq!(
+            detail.suggestion,
+            Some("Expected i32, found String".to_string())
+        );
+        assert_eq!(
+            detail.doc_url,
+            Some("https://doc.rust-lang.org/error-index.html#E0308".to_string())
+        );
+    }
+
+    #[test]
+    fn test_gate_failure_detail_with_location() {
+        let detail = GateFailureDetail::new(FailureCategory::Lint, "Test").with_location(
+            "src/lib.rs",
+            100,
+            Some(5),
+        );
+
+        assert_eq!(detail.file, Some("src/lib.rs".to_string()));
+        assert_eq!(detail.line, Some(100));
+        assert_eq!(detail.column, Some(5));
+
+        // Test without column
+        let detail2 = GateFailureDetail::new(FailureCategory::Lint, "Test").with_location(
+            "src/lib.rs",
+            200,
+            None,
+        );
+
+        assert_eq!(detail2.file, Some("src/lib.rs".to_string()));
+        assert_eq!(detail2.line, Some(200));
+        assert!(detail2.column.is_none());
+    }
+
+    #[test]
+    fn test_gate_failure_detail_serialization_roundtrip_minimal() {
+        let detail = GateFailureDetail::new(FailureCategory::Coverage, "Coverage below threshold");
+
+        let json = serde_json::to_string(&detail).expect("Failed to serialize");
+        let deserialized: GateFailureDetail =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(detail.category, deserialized.category);
+        assert_eq!(detail.message, deserialized.message);
+        assert_eq!(detail.file, deserialized.file);
+        assert_eq!(detail.line, deserialized.line);
+        assert_eq!(detail.column, deserialized.column);
+        assert_eq!(detail.error_code, deserialized.error_code);
+        assert_eq!(detail.suggestion, deserialized.suggestion);
+        assert_eq!(detail.doc_url, deserialized.doc_url);
+    }
+
+    #[test]
+    fn test_gate_failure_detail_serialization_roundtrip_full() {
+        let detail = GateFailureDetail::new(FailureCategory::Security, "Vulnerability detected")
+            .with_file("Cargo.lock")
+            .with_line(150)
+            .with_column(1)
+            .with_error_code("RUSTSEC-2023-0001")
+            .with_suggestion("Upgrade the dependency to a patched version")
+            .with_doc_url("https://rustsec.org/advisories/RUSTSEC-2023-0001");
+
+        let json = serde_json::to_string(&detail).expect("Failed to serialize");
+        let deserialized: GateFailureDetail =
+            serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(detail.category, deserialized.category);
+        assert_eq!(detail.message, deserialized.message);
+        assert_eq!(detail.file, deserialized.file);
+        assert_eq!(detail.line, deserialized.line);
+        assert_eq!(detail.column, deserialized.column);
+        assert_eq!(detail.error_code, deserialized.error_code);
+        assert_eq!(detail.suggestion, deserialized.suggestion);
+        assert_eq!(detail.doc_url, deserialized.doc_url);
+    }
+
+    #[test]
+    fn test_gate_failure_detail_skips_none_fields_in_json() {
+        let detail = GateFailureDetail::new(FailureCategory::Format, "Unformatted file");
+
+        let json = serde_json::to_string(&detail).expect("Failed to serialize");
+
+        // Optional None fields should not appear in JSON
+        assert!(!json.contains("\"file\""));
+        assert!(!json.contains("\"line\""));
+        assert!(!json.contains("\"column\""));
+        assert!(!json.contains("\"error_code\""));
+        assert!(!json.contains("\"suggestion\""));
+        assert!(!json.contains("\"doc_url\""));
+
+        // Required fields should appear
+        assert!(json.contains("\"category\""));
+        assert!(json.contains("\"message\""));
+    }
+
+    #[test]
+    fn test_gate_failure_detail_json_deserialization_with_extra_fields() {
+        // Test that deserialization is resilient to extra fields
+        let json = r#"{
+            "category": "test",
+            "message": "Test failed",
+            "extra_field": "should be ignored"
+        }"#;
+
+        let detail: GateFailureDetail =
+            serde_json::from_str(json).expect("Should deserialize despite extra fields");
+        assert_eq!(detail.category, FailureCategory::Test);
+        assert_eq!(detail.message, "Test failed");
+    }
+
+    #[test]
+    fn test_gate_failure_detail_all_categories_roundtrip() {
+        let categories = [
+            FailureCategory::Lint,
+            FailureCategory::TypeCheck,
+            FailureCategory::Test,
+            FailureCategory::Format,
+            FailureCategory::Security,
+            FailureCategory::Coverage,
+        ];
+
+        for category in &categories {
+            let detail =
+                GateFailureDetail::new(*category, format!("Test message for {:?}", category));
+
+            let json = serde_json::to_string(&detail).expect("Failed to serialize");
+            let deserialized: GateFailureDetail =
+                serde_json::from_str(&json).expect("Failed to deserialize");
+
+            assert_eq!(detail.category, deserialized.category);
+            assert_eq!(detail.message, deserialized.message);
         }
     }
 }
