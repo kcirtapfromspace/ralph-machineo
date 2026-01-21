@@ -32,7 +32,10 @@ pub use collapsible::{
 pub use colors::{
     active_text, ansi, blinking_text, completed_text, muted_text, primary_text, StyledText, Theme,
 };
-pub use display::{DisplayCallback, DisplayOptions, RalphDisplay, UiMode};
+pub use display::{
+    new_shared_activity_state, DisplayCallback, DisplayOptions, LastActivityInfo, RalphDisplay,
+    SharedActivityState, StreamingDisplayCallback, UiMode,
+};
 pub use ghostty::{
     file_hyperlink, file_hyperlink_with_line, hyperlink, GhosttyFeatures, SyncGuard,
     TerminalCapabilities, TitleStatus,
