@@ -107,16 +107,21 @@ pub struct ErrorDetector {
 
 impl Default for ErrorDetector {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("default patterns should be valid")
     }
 }
 
 impl ErrorDetector {
     /// Creates a new error detector with pre-configured patterns for Claude Code errors.
-    pub fn new() -> Self {
-        Self {
-            patterns: Self::default_patterns(),
-        }
+    ///
+    /// # Errors
+    /// Returns an error if any default pattern fails to compile. This should not happen
+    /// with the hardcoded patterns, but the error handling ensures graceful failure
+    /// if patterns are modified.
+    pub fn new() -> Result<Self, String> {
+        Ok(Self {
+            patterns: Self::default_patterns()?,
+        })
     }
 
     /// Creates an error detector with custom patterns.
@@ -125,212 +130,187 @@ impl ErrorDetector {
     }
 
     /// Returns the default patterns for Claude Code error detection.
-    /// All patterns use hardcoded, pre-validated regexes.
-    fn default_patterns() -> Vec<ErrorPattern> {
-        vec![
+    ///
+    /// # Errors
+    /// Returns an error if any regex pattern fails to compile, including the invalid pattern
+    /// in the error message for debugging purposes.
+    pub fn default_patterns() -> Result<Vec<ErrorPattern>, String> {
+        Ok(vec![
             // Rate limit patterns (highest priority for usage limits)
             ErrorPattern::new(
                 r"(?i)\b429\b",
                 ErrorCategory::UsageLimit(UsageLimitReason::RateLimited),
                 RecoveryHint::RetryAfter(Duration::from_secs(60)),
                 "HTTP 429 status code",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\brate[\s\-]?limit",
                 ErrorCategory::UsageLimit(UsageLimitReason::RateLimited),
                 RecoveryHint::RetryAfter(Duration::from_secs(60)),
                 "Rate limit error message",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)too\s+many\s+requests",
                 ErrorCategory::UsageLimit(UsageLimitReason::RateLimited),
                 RecoveryHint::RetryAfter(Duration::from_secs(60)),
                 "Too many requests error",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             // Usage limit patterns
             ErrorPattern::new(
                 r"(?i)plan\s*limit",
                 ErrorCategory::UsageLimit(UsageLimitReason::QuotaExhausted),
                 RecoveryHint::WaitForUser,
                 "Plan limit reached",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)usage\s*limit",
                 ErrorCategory::UsageLimit(UsageLimitReason::QuotaExhausted),
                 RecoveryHint::WaitForUser,
                 "Usage limit exceeded",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)quota\s*(exceeded|exhausted)",
                 ErrorCategory::UsageLimit(UsageLimitReason::QuotaExhausted),
                 RecoveryHint::WaitForUser,
                 "Quota exceeded",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)token\s*limit",
                 ErrorCategory::UsageLimit(UsageLimitReason::TokenLimitExceeded),
                 RecoveryHint::WaitForUser,
                 "Token limit exceeded",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)concurrency\s*limit",
                 ErrorCategory::UsageLimit(UsageLimitReason::ConcurrencyLimit),
                 RecoveryHint::RetryAfter(Duration::from_secs(30)),
                 "Concurrency limit reached",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             // Authentication error patterns
             ErrorPattern::new(
                 r"(?i)\bunauthorized\b",
                 ErrorCategory::Fatal(FatalReason::AuthenticationFailed),
                 RecoveryHint::WaitForUser,
                 "Unauthorized access",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)auth(entication)?\s*(failed|error)",
                 ErrorCategory::Fatal(FatalReason::AuthenticationFailed),
                 RecoveryHint::WaitForUser,
                 "Authentication failed",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)invalid\s*(api\s*)?token",
                 ErrorCategory::Fatal(FatalReason::AuthenticationFailed),
                 RecoveryHint::WaitForUser,
                 "Invalid token",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)invalid\s*(api\s*)?key",
                 ErrorCategory::Fatal(FatalReason::AuthenticationFailed),
                 RecoveryHint::WaitForUser,
                 "Invalid API key",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)permission\s*denied",
                 ErrorCategory::Fatal(FatalReason::PermissionDenied),
                 RecoveryHint::WaitForUser,
                 "Permission denied",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)access\s*denied",
                 ErrorCategory::Fatal(FatalReason::PermissionDenied),
                 RecoveryHint::WaitForUser,
                 "Access denied",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\b403\b",
                 ErrorCategory::Fatal(FatalReason::PermissionDenied),
                 RecoveryHint::WaitForUser,
                 "HTTP 403 Forbidden",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\b401\b",
                 ErrorCategory::Fatal(FatalReason::AuthenticationFailed),
                 RecoveryHint::WaitForUser,
                 "HTTP 401 Unauthorized",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             // Network/transient error patterns
             ErrorPattern::new(
                 r"(?i)connection\s*(refused|reset|timed?\s*out)",
                 ErrorCategory::Transient(TransientReason::ConnectionReset),
                 RecoveryHint::RetryNow,
                 "Connection error",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)network\s*(error|failure)",
                 ErrorCategory::Transient(TransientReason::NetworkError),
                 RecoveryHint::RetryNow,
                 "Network error",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\b503\b",
                 ErrorCategory::Transient(TransientReason::ServiceUnavailable),
                 RecoveryHint::RetryAfter(Duration::from_secs(30)),
                 "HTTP 503 Service Unavailable",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)service\s*unavailable",
                 ErrorCategory::Transient(TransientReason::ServiceUnavailable),
                 RecoveryHint::RetryAfter(Duration::from_secs(30)),
                 "Service unavailable",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\b5[0-9]{2}\b",
                 ErrorCategory::Transient(TransientReason::ServerError),
                 RecoveryHint::RetryAfter(Duration::from_secs(10)),
                 "HTTP 5xx server error",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             // Timeout patterns
             ErrorPattern::new(
                 r"(?i)request\s*time(d?\s*)?out",
                 ErrorCategory::Timeout(TimeoutReason::RequestTimeout),
                 RecoveryHint::RetryNow,
                 "Request timeout",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)operation\s*time(d?\s*)?out",
                 ErrorCategory::Timeout(TimeoutReason::OperationDeadline),
                 RecoveryHint::RetryNow,
                 "Operation timeout",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)deadline\s*(exceeded|expired)",
                 ErrorCategory::Timeout(TimeoutReason::OperationDeadline),
                 RecoveryHint::RetryNow,
                 "Deadline exceeded",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             // Resource errors
             ErrorPattern::new(
                 r"(?i)\b404\b",
                 ErrorCategory::Fatal(FatalReason::ResourceNotFound),
                 RecoveryHint::StopExecution,
                 "HTTP 404 Not Found",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)not\s*found",
                 ErrorCategory::Fatal(FatalReason::ResourceNotFound),
                 RecoveryHint::StopExecution,
                 "Resource not found",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)invalid\s*request",
                 ErrorCategory::Fatal(FatalReason::InvalidRequest),
                 RecoveryHint::StopExecution,
                 "Invalid request",
-            )
-            .expect("valid built-in pattern"),
+            )?,
             ErrorPattern::new(
                 r"(?i)\b400\b",
                 ErrorCategory::Fatal(FatalReason::InvalidRequest),
                 RecoveryHint::StopExecution,
                 "HTTP 400 Bad Request",
-            )
-            .expect("valid built-in pattern"),
-        ]
+            )?,
+        ])
     }
 
     /// Adds a custom pattern to the detector.
@@ -460,7 +440,7 @@ mod tests {
 
     // Helper function to create a detector for testing
     fn test_detector() -> ErrorDetector {
-        ErrorDetector::new()
+        ErrorDetector::new().expect("default patterns should be valid")
     }
 
     // ==================== ErrorPattern Tests ====================
@@ -529,11 +509,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_error_pattern_invalid_regex() {
+        let result = ErrorPattern::new(
+            r"[invalid(regex",
+            ErrorCategory::Fatal(FatalReason::InternalError),
+            RecoveryHint::StopExecution,
+            "Invalid pattern",
+        );
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("[invalid(regex"),
+            "Error should include the invalid pattern"
+        );
+    }
+
+    #[test]
+    fn test_default_patterns_all_valid() {
+        let patterns = ErrorDetector::default_patterns();
+        assert!(patterns.is_ok(), "All default patterns should be valid");
+        let patterns = patterns.unwrap();
+        assert!(
+            patterns.len() >= 24,
+            "Should have at least 24 patterns, got {}",
+            patterns.len()
+        );
+    }
+
     // ==================== ErrorDetector Construction Tests ====================
 
     #[test]
     fn test_error_detector_new() {
-        let detector = ErrorDetector::new();
+        let detector = ErrorDetector::new().expect("should create detector");
         assert!(detector.pattern_count() > 0);
     }
 
@@ -575,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_error_detector_patterns() {
-        let detector = ErrorDetector::new();
+        let detector = ErrorDetector::new().expect("should create detector");
         let patterns = detector.patterns();
         assert!(!patterns.is_empty());
     }

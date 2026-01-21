@@ -154,7 +154,7 @@ fn test_checkpoint_overwrite_and_clear() {
 
 #[test]
 fn test_error_classification_rate_limit_patterns() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     let rate_limit_texts = vec![
         "Error 429: Too Many Requests",
@@ -180,7 +180,7 @@ fn test_error_classification_rate_limit_patterns() {
 
 #[test]
 fn test_error_classification_authentication_patterns() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     let auth_texts = vec![
         "401 Unauthorized",
@@ -206,7 +206,7 @@ fn test_error_classification_authentication_patterns() {
 
 #[test]
 fn test_error_classification_timeout_patterns() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     let timeout_texts = vec![
         "Request timeout",
@@ -229,7 +229,7 @@ fn test_error_classification_timeout_patterns() {
 
 #[test]
 fn test_error_classification_transient_patterns() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     let transient_texts = vec![
         "Connection refused",
@@ -256,7 +256,7 @@ fn test_error_classification_transient_patterns() {
 
 #[test]
 fn test_error_classification_exit_codes() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     // Exit code 124 = timeout
     let result = detector.classify_exit_code(124);
@@ -289,7 +289,7 @@ fn test_error_classification_exit_codes() {
 
 #[test]
 fn test_error_classification_combined() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     // Text classification takes priority over exit code
     let result = detector.classify("rate limit exceeded", Some(124));
@@ -746,7 +746,7 @@ async fn test_heartbeat_pulse_resets_timer() {
 fn test_error_recovery_flow_checkpoint_on_error() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let manager = CheckpointManager::new(temp_dir.path()).expect("Failed to create manager");
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
 
     // Simulate detecting a rate limit error
     let error_output = "Error 429: Rate limit exceeded";
@@ -777,7 +777,7 @@ fn test_error_recovery_flow_checkpoint_on_error() {
 
 #[test]
 fn test_error_recovery_flow_retry_decision() {
-    let detector = ErrorDetector::new();
+    let detector = ErrorDetector::new().expect("should create detector");
     let strategy = RetryStrategy::default();
 
     // Transient error should allow retry
