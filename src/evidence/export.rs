@@ -143,6 +143,7 @@ mod tests {
         let metrics_collector = RunMetricsCollector::new(run_id, 1);
         metrics_collector.start_step("step-1");
         metrics_collector.complete_step("step-1", true, 1, Duration::from_secs(1), None);
+        metrics_collector.record_evidence_step("step-1");
         let metrics = metrics_collector.finish();
         let metrics_store = RunMetricsStore::new(temp_dir.path()).expect("metrics store");
         metrics_store.save(&metrics).expect("save metrics");
