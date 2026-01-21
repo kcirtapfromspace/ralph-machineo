@@ -54,6 +54,8 @@ pub struct TuiRunnerDisplay {
     shared_activity: Option<SharedActivityState>,
     /// When the current iteration started
     iteration_start: Mutex<Option<Instant>>,
+    /// Circuit breaker state: current failures and threshold
+    circuit_breaker_state: Mutex<Option<(u32, u32)>>,
 }
 
 impl Default for TuiRunnerDisplay {
@@ -84,6 +86,7 @@ impl TuiRunnerDisplay {
             toggle_state,
             shared_activity: None,
             iteration_start: Mutex::new(None),
+            circuit_breaker_state: Mutex::new(None),
         }
     }
 
@@ -111,6 +114,7 @@ impl TuiRunnerDisplay {
             toggle_state,
             shared_activity: None,
             iteration_start: Mutex::new(None),
+            circuit_breaker_state: Mutex::new(None),
         }
     }
 
@@ -139,6 +143,88 @@ impl TuiRunnerDisplay {
             .lock()
             .ok()?
             .map(|start| start.elapsed())
+    }
+
+    /// Update the circuit breaker status.
+    pub fn update_circuit_breaker(&self, current_failures: u32, threshold: u32) {
+        if let Ok(mut state) = self.circuit_breaker_state.lock() {
+            *state = Some((current_failures, threshold));
+        }
+    }
+
+    /// Reset the circuit breaker counter (called on story success).
+    pub fn reset_circuit_breaker(&self) {
+        if let Ok(mut state) = self.circuit_breaker_state.lock() {
+            if let Some((_, threshold)) = *state {
+                *state = Some((0, threshold));
+            }
+        }
+    }
+
+    /// Render the circuit breaker status string with appropriate coloring.
+    ///
+    /// Returns "Failures: N/T" with colors:
+    /// - Normal (muted) when N < 60% of T
+    /// - Yellow (warning) when N >= 60% of T (3/5)
+    /// - Red (error) when N >= 80% of T (4/5)
+    fn render_circuit_breaker_status(&self) -> Option<String> {
+        let state = self.circuit_breaker_state.lock().ok()?;
+        let (current, threshold) = (*state)?;
+
+        // Only show if threshold > 0 to avoid division by zero
+        if threshold == 0 {
+            return None;
+        }
+
+        let percentage = (current as f64 / threshold as f64) * 100.0;
+        let status_text = format!("Failures: {}/{}", current, threshold);
+
+        if !self.use_colors {
+            return Some(status_text);
+        }
+
+        // Color coding based on percentage:
+        // - >= 80% (4/5): Red (error)
+        // - >= 60% (3/5): Yellow (warning)
+        // - < 60%: Gray (muted)
+        let colored = if percentage >= 80.0 {
+            // Red - critical threshold approaching
+            format!("\x1b[38;2;239;68;68m{}\x1b[0m", status_text)
+        } else if percentage >= 60.0 {
+            // Yellow - warning threshold
+            format!("\x1b[38;2;234;179;8m{}\x1b[0m", status_text)
+        } else {
+            // Gray - normal
+            format!("\x1b[38;2;107;114;128m{}\x1b[0m", status_text)
+        };
+
+        Some(colored)
+    }
+
+    /// Display a clear notification when circuit breaker triggers.
+    pub fn display_circuit_breaker_triggered(&self, failures: u32, threshold: u32) {
+        if self.quiet {
+            return;
+        }
+
+        println!();
+        let message = format!(
+            "CIRCUIT BREAKER TRIGGERED: {} consecutive failures (threshold: {})",
+            failures, threshold
+        );
+
+        if self.use_colors {
+            // Red background with white text for maximum visibility
+            println!(
+                "\x1b[48;2;239;68;68m\x1b[38;2;255;255;255m {} \x1b[0m",
+                message
+            );
+        } else {
+            println!("*** {} ***", message);
+        }
+
+        println!("Execution paused. Resume with: ralph --resume");
+        println!();
     }
 
     /// Redraw the iteration status line after streaming output.
@@ -308,10 +394,17 @@ impl TuiRunnerDisplay {
             String::new()
         };
 
+        // Build circuit breaker status string if available
+        let cb_status_str = self
+            .render_circuit_breaker_status()
+            .map(|s| format!(" | {}", s))
+            .unwrap_or_default();
+
         print!(
-            "  {}{}",
+            "  {}{}{}",
             iter_widget.render_string(),
-            self.style_dim(&elapsed_str)
+            self.style_dim(&elapsed_str),
+            cb_status_str
         );
 
         // Render last activity indicator on a new line if available

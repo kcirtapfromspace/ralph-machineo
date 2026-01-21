@@ -671,6 +671,81 @@ impl ParallelRunnerDisplay {
             pb.finish();
         }
     }
+
+    /// Display circuit breaker status with color coding.
+    ///
+    /// Colors based on percentage of threshold:
+    /// - Normal (muted) when < 60% of threshold
+    /// - Yellow (warning) when >= 60% of threshold (3/5)
+    /// - Red (error) when >= 80% of threshold (4/5)
+    ///
+    /// # Arguments
+    /// * `current_failures` - Current number of consecutive/cumulative failures
+    /// * `threshold` - Threshold at which the circuit breaker will trigger
+    pub fn display_circuit_breaker_status(&self, current_failures: u32, threshold: u32) {
+        if self.display_options.quiet || threshold == 0 {
+            return;
+        }
+
+        let percentage = (current_failures as f64 / threshold as f64) * 100.0;
+        let status_text = format!("Failures: {}/{}", current_failures, threshold);
+
+        let colored_status = if self.colors_enabled {
+            if percentage >= 80.0 {
+                // Red - critical threshold approaching
+                format!(
+                    "\x1b[38;2;{};{};{}m\x1b[1m{}\x1b[0m",
+                    self.theme.error.0, self.theme.error.1, self.theme.error.2, status_text
+                )
+            } else if percentage >= 60.0 {
+                // Yellow - warning threshold
+                format!(
+                    "\x1b[38;2;{};{};{}m\x1b[1m{}\x1b[0m",
+                    self.theme.warning.0, self.theme.warning.1, self.theme.warning.2, status_text
+                )
+            } else {
+                // Gray - normal
+                format!(
+                    "\x1b[38;2;{};{};{}m{}\x1b[0m",
+                    self.theme.muted.0, self.theme.muted.1, self.theme.muted.2, status_text
+                )
+            }
+        } else {
+            status_text
+        };
+
+        println!("  {}", colored_status);
+    }
+
+    /// Display a clear notification when circuit breaker triggers.
+    ///
+    /// # Arguments
+    /// * `failures` - Number of failures that triggered the circuit breaker
+    /// * `threshold` - Threshold that was exceeded
+    pub fn display_circuit_breaker_triggered(&self, failures: u32, threshold: u32) {
+        if self.display_options.quiet {
+            return;
+        }
+
+        println!();
+        let message = format!(
+            "CIRCUIT BREAKER TRIGGERED: {} consecutive failures (threshold: {})",
+            failures, threshold
+        );
+
+        if self.colors_enabled {
+            // Red background with white text for maximum visibility
+            println!(
+                "\x1b[48;2;{};{};{}m\x1b[38;2;255;255;255m {} \x1b[0m",
+                self.theme.error.0, self.theme.error.1, self.theme.error.2, message
+            );
+        } else {
+            println!("*** {} ***", message);
+        }
+
+        println!("Execution paused. Resume with: ralph --resume");
+        println!();
+    }
 }
 
 #[cfg(test)]
@@ -816,5 +891,31 @@ mod tests {
             display.get_status_color(StoryStatus::SequentialRetry),
             display.theme.active
         );
+    }
+
+    #[test]
+    fn test_display_circuit_breaker_status_quiet_mode() {
+        let options = DisplayOptions::new().with_quiet(true);
+        let display = ParallelRunnerDisplay::with_display_options(options);
+
+        // Should not panic in quiet mode
+        display.display_circuit_breaker_status(3, 5);
+    }
+
+    #[test]
+    fn test_display_circuit_breaker_status_zero_threshold() {
+        let display = ParallelRunnerDisplay::new();
+
+        // Should not panic with zero threshold (avoids division by zero)
+        display.display_circuit_breaker_status(0, 0);
+    }
+
+    #[test]
+    fn test_display_circuit_breaker_triggered_quiet_mode() {
+        let options = DisplayOptions::new().with_quiet(true);
+        let display = ParallelRunnerDisplay::with_display_options(options);
+
+        // Should not panic in quiet mode
+        display.display_circuit_breaker_triggered(5, 5);
     }
 }

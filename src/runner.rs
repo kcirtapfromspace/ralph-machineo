@@ -214,6 +214,9 @@ impl Runner {
         let mut display =
             TuiRunnerDisplay::with_display_options(self.config.display_options.clone());
 
+        // Initialize circuit breaker display state
+        display.update_circuit_breaker(0, circuit_breaker_threshold);
+
         // Create shared activity state for real-time status updates
         let shared_activity = new_shared_activity_state();
         display.set_shared_activity(shared_activity.clone());
@@ -501,6 +504,7 @@ impl Runner {
                             if exec_result.success {
                                 // Reset circuit breaker counter on success
                                 consecutive_failures = 0;
+                                display.reset_circuit_breaker();
                                 // Clear checkpoint on successful story completion
                                 self.clear_checkpoint();
                                 if let Some(writer) = evidence.as_mut() {
@@ -516,6 +520,10 @@ impl Runner {
                             } else {
                                 // Increment circuit breaker counter on failure
                                 consecutive_failures += 1;
+                                display.update_circuit_breaker(
+                                    consecutive_failures,
+                                    circuit_breaker_threshold,
+                                );
 
                                 let error_message = exec_result
                                     .error
@@ -540,7 +548,11 @@ impl Runner {
                                         "Circuit breaker triggered: {} consecutive failures (threshold: {})",
                                         consecutive_failures, circuit_breaker_threshold
                                     );
-                                    println!("\n⚡ {}", circuit_breaker_msg);
+                                    // Display circuit breaker triggered notification
+                                    display.display_circuit_breaker_triggered(
+                                        consecutive_failures,
+                                        circuit_breaker_threshold,
+                                    );
                                     if let Some(writer) = evidence.as_mut() {
                                         writer.emit_run_complete(
                                             "failed",

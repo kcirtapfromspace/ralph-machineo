@@ -548,6 +548,20 @@ impl ParallelRunner {
                         | ParallelUIEvent::ReconciliationStatus { .. } => {
                             // These events don't have direct display methods yet
                         }
+                        ParallelUIEvent::CircuitBreakerStatus {
+                            current_failures,
+                            threshold,
+                        } => {
+                            // Display circuit breaker status with color coding
+                            display.display_circuit_breaker_status(*current_failures, *threshold);
+                        }
+                        ParallelUIEvent::CircuitBreakerTriggered {
+                            failures,
+                            threshold,
+                        } => {
+                            // Display clear notification when circuit breaker triggers
+                            display.display_circuit_breaker_triggered(*failures, *threshold);
+                        }
                         ParallelUIEvent::KeyboardToggle { .. }
                         | ParallelUIEvent::GracefulQuitRequested
                         | ParallelUIEvent::ImmediateInterrupt => {
@@ -585,6 +599,14 @@ impl ParallelRunner {
         // Circuit breaker: track cumulative failures across batches
         let mut cumulative_failures: u32 = 0;
         let circuit_breaker_threshold = self.config.circuit_breaker_threshold;
+
+        // Send initial circuit breaker status
+        if let Some(ref sender) = ui_sender {
+            let _ = sender.try_send(ParallelUIEvent::CircuitBreakerStatus {
+                current_failures: cumulative_failures,
+                threshold: circuit_breaker_threshold,
+            });
+        }
 
         // Shared cancel channel for graceful shutdown when circuit breaker triggers
         let (cancel_tx, _cancel_rx) = watch::channel(false);
@@ -1046,6 +1068,16 @@ impl ParallelRunner {
                         }
                         cumulative_failures += batch_non_transient_failures;
 
+                        // Send circuit breaker status update
+                        if batch_non_transient_failures > 0 {
+                            if let Some(ref sender) = ui_sender {
+                                let _ = sender.try_send(ParallelUIEvent::CircuitBreakerStatus {
+                                    current_failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                });
+                            }
+                        }
+
                         // Check circuit breaker threshold
                         if cumulative_failures >= circuit_breaker_threshold {
                             // Send cancel signal to any remaining in-flight stories
@@ -1076,7 +1108,23 @@ impl ParallelRunner {
                                 "Circuit breaker triggered: {} failures across batches (threshold: {})",
                                 cumulative_failures, circuit_breaker_threshold
                             );
-                            println!("\n⚡ {}", circuit_breaker_msg);
+
+                            // Send circuit breaker triggered event
+                            if let Some(ref sender) = ui_sender {
+                                let _ = sender.try_send(ParallelUIEvent::CircuitBreakerTriggered {
+                                    failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                });
+                            }
+
+                            // Print circuit breaker notification
+                            println!();
+                            println!(
+                                "\x1b[48;2;239;68;68m\x1b[38;2;255;255;255m CIRCUIT BREAKER TRIGGERED: {} failures (threshold: {}) \x1b[0m",
+                                cumulative_failures, circuit_breaker_threshold
+                            );
+                            println!("Execution paused. Resume with: ralph --resume");
+                            println!();
 
                             let state = self.execution_state.read().await;
                             emit_run_complete(
