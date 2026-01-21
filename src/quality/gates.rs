@@ -12,6 +12,56 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// JSON message format from `cargo clippy --message-format=json`.
+///
+/// Each line of clippy's stdout is a separate JSON object with this structure.
+#[derive(Debug, Deserialize)]
+struct ClippyMessage {
+    /// Type of message (e.g., "compiler-message", "compiler-artifact")
+    reason: String,
+    /// The actual diagnostic message (only present for compiler-message)
+    message: Option<ClippyDiagnostic>,
+}
+
+/// A diagnostic message from clippy.
+#[derive(Debug, Deserialize)]
+struct ClippyDiagnostic {
+    /// Severity level (e.g., "error", "warning", "note", "help")
+    level: String,
+    /// Human-readable message text
+    message: String,
+    /// Error code information (e.g., for "E0382" or "clippy::unwrap_used")
+    code: Option<ClippyCode>,
+    /// Source locations where the diagnostic applies
+    #[serde(default)]
+    spans: Vec<ClippySpan>,
+    /// Child diagnostics (notes, help messages, suggestions)
+    #[serde(default)]
+    children: Vec<ClippyDiagnostic>,
+}
+
+/// Error code information from clippy.
+#[derive(Debug, Deserialize)]
+struct ClippyCode {
+    /// The error code string (e.g., "E0382", "clippy::unwrap_used")
+    code: String,
+    /// Optional explanation text
+    explanation: Option<String>,
+}
+
+/// Source location span from clippy.
+#[derive(Debug, Deserialize)]
+struct ClippySpan {
+    /// File path
+    file_name: String,
+    /// Starting line number (1-indexed)
+    line_start: u32,
+    /// Starting column number (1-indexed)
+    column_start: u32,
+    /// Suggested replacement text (for fixable warnings)
+    suggested_replacement: Option<String>,
+}
+
 /// Category of a quality gate failure.
 ///
 /// Represents the type of check that failed, allowing downstream code
@@ -582,7 +632,8 @@ impl QualityGateChecker {
 
     /// Check code linting using cargo clippy.
     ///
-    /// Runs `cargo clippy -- -D warnings` which treats all warnings as errors.
+    /// Runs `cargo clippy --message-format=json -- -D warnings` which treats all warnings as errors
+    /// and outputs structured JSON for parsing.
     ///
     /// # Returns
     ///
@@ -593,24 +644,26 @@ impl QualityGateChecker {
         }
 
         let output = Command::new("cargo")
-            .args(["clippy", "--", "-D", "warnings"])
+            .args(["clippy", "--message-format=json", "--", "-D", "warnings"])
             .current_dir(&self.project_root)
             .output();
 
         match output {
             Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
                 if output.status.success() {
                     GateResult::pass("lint", "No clippy warnings found")
                 } else {
-                    // Extract the error details from stderr
-                    let details = Self::extract_clippy_errors(&stderr);
+                    // Extract structured failure details from JSON output
+                    let failures = Self::extract_clippy_errors(&stdout, &stderr);
+                    let details = Self::format_clippy_summary(&failures);
                     GateResult::fail(
                         "lint",
                         "Clippy found warnings or errors",
                         Some(details),
-                        None,
+                        Some(failures),
                     )
                 }
             }
@@ -623,26 +676,233 @@ impl QualityGateChecker {
         }
     }
 
-    /// Extract relevant error messages from clippy stderr output.
-    fn extract_clippy_errors(stderr: &str) -> String {
-        // Clippy outputs errors and warnings to stderr
-        // Filter to show the most relevant lines (errors, warnings, and their context)
-        let relevant_lines: Vec<&str> = stderr
-            .lines()
-            .filter(|line| {
-                line.contains("error")
-                    || line.contains("warning")
-                    || line.starts_with("  -->")
-                    || line.starts_with("   |")
-            })
-            .take(50) // Limit to first 50 lines to avoid huge output
-            .collect();
+    /// Maximum number of clippy failures to include in results.
+    const MAX_CLIPPY_FAILURES: usize = 20;
 
-        if relevant_lines.is_empty() {
-            stderr.to_string()
-        } else {
-            relevant_lines.join("\n")
+    /// Extract structured error details from clippy output.
+    ///
+    /// Attempts to parse JSON output first (from --message-format=json),
+    /// falling back to text parsing if JSON parsing fails.
+    ///
+    /// # Arguments
+    ///
+    /// * `stdout` - Standard output from clippy (contains JSON messages)
+    /// * `stderr` - Standard error from clippy (contains text output)
+    ///
+    /// # Returns
+    ///
+    /// A vector of structured failure details, limited to first 20 failures.
+    fn extract_clippy_errors(stdout: &str, stderr: &str) -> Vec<GateFailureDetail> {
+        // Try JSON parsing first
+        let failures = Self::parse_clippy_json(stdout);
+        if !failures.is_empty() {
+            return failures;
         }
+
+        // Fall back to text parsing
+        Self::parse_clippy_text(stderr)
+    }
+
+    /// Parse clippy JSON output format (from --message-format=json).
+    ///
+    /// Each line is a separate JSON object representing a compiler message.
+    fn parse_clippy_json(stdout: &str) -> Vec<GateFailureDetail> {
+        let mut failures = Vec::new();
+
+        for line in stdout.lines() {
+            if failures.len() >= Self::MAX_CLIPPY_FAILURES {
+                break;
+            }
+
+            // Skip empty lines
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Try to parse as JSON
+            if let Ok(msg) = serde_json::from_str::<ClippyMessage>(line) {
+                // Only process compiler messages with actual diagnostics
+                if msg.reason == "compiler-message" {
+                    if let Some(message) = msg.message {
+                        // Only include errors and warnings
+                        if matches!(message.level.as_str(), "error" | "warning") {
+                            // Skip "aborting due to" messages
+                            if message.message.starts_with("aborting due to") {
+                                continue;
+                            }
+
+                            let mut detail = GateFailureDetail::new(
+                                FailureCategory::Lint,
+                                message.message.clone(),
+                            );
+
+                            // Extract error code
+                            if let Some(code) = &message.code {
+                                detail = detail.with_error_code(&code.code);
+                                // Add explanation URL if available
+                                if let Some(ref explanation) = code.explanation {
+                                    if !explanation.is_empty() {
+                                        detail = detail.with_doc_url(explanation);
+                                    }
+                                }
+                            }
+
+                            // Extract location from spans
+                            if let Some(span) = message.spans.first() {
+                                detail = detail.with_location(
+                                    &span.file_name,
+                                    span.line_start,
+                                    Some(span.column_start),
+                                );
+
+                                // Extract suggestion if available
+                                if let Some(ref suggested) = span.suggested_replacement {
+                                    if !suggested.is_empty() {
+                                        detail = detail.with_suggestion(suggested);
+                                    }
+                                }
+                            }
+
+                            // Check children for suggestions
+                            if detail.suggestion.is_none() {
+                                for child in &message.children {
+                                    if child.level == "help" {
+                                        if let Some(span) = child.spans.first() {
+                                            if let Some(ref suggested) = span.suggested_replacement
+                                            {
+                                                if !suggested.is_empty() {
+                                                    detail = detail.with_suggestion(suggested);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        // Use child message as suggestion if no replacement
+                                        if detail.suggestion.is_none() && !child.message.is_empty()
+                                        {
+                                            detail = detail.with_suggestion(&child.message);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            failures.push(detail);
+                        }
+                    }
+                }
+            }
+        }
+
+        failures
+    }
+
+    /// Parse clippy text output (fallback when JSON parsing fails).
+    ///
+    /// Extracts error information from stderr using regex patterns.
+    fn parse_clippy_text(stderr: &str) -> Vec<GateFailureDetail> {
+        let mut failures = Vec::new();
+        let mut current_message: Option<String> = None;
+        let mut current_file: Option<String> = None;
+        let mut current_line: Option<u32> = None;
+        let mut current_column: Option<u32> = None;
+
+        for line in stderr.lines() {
+            if failures.len() >= Self::MAX_CLIPPY_FAILURES {
+                break;
+            }
+
+            // Match error/warning lines: "error[E0001]: message" or "warning: message"
+            if line.starts_with("error") || line.starts_with("warning") {
+                // Save previous error if any
+                if let Some(msg) = current_message.take() {
+                    let mut detail = GateFailureDetail::new(FailureCategory::Lint, msg);
+                    if let Some(file) = current_file.take() {
+                        detail = detail.with_file(file);
+                    }
+                    if let Some(line_num) = current_line.take() {
+                        detail = detail.with_line(line_num);
+                    }
+                    if let Some(col) = current_column.take() {
+                        detail = detail.with_column(col);
+                    }
+                    failures.push(detail);
+                }
+
+                // Extract message, handling both "error[CODE]: msg" and "error: msg"
+                let msg = if line.contains('[') && line.contains("]: ") {
+                    if let Some(colon_pos) = line.find("]: ") {
+                        line[colon_pos + 3..].to_string()
+                    } else {
+                        line.to_string()
+                    }
+                } else if let Some(colon_pos) = line.find(": ") {
+                    line[colon_pos + 2..].to_string()
+                } else {
+                    line.to_string()
+                };
+
+                current_message = Some(msg);
+            }
+            // Match location lines: "  --> src/file.rs:10:5"
+            else if line.trim().starts_with("-->") {
+                let location = line.trim().trim_start_matches("-->").trim();
+                // Parse "file:line:column"
+                let parts: Vec<&str> = location.rsplitn(3, ':').collect();
+                if parts.len() >= 2 {
+                    current_column = parts[0].parse().ok();
+                    current_line = parts[1].parse().ok();
+                    if parts.len() >= 3 {
+                        current_file = Some(parts[2].to_string());
+                    }
+                }
+            }
+        }
+
+        // Don't forget the last error
+        if let Some(msg) = current_message {
+            if failures.len() < Self::MAX_CLIPPY_FAILURES {
+                let mut detail = GateFailureDetail::new(FailureCategory::Lint, msg);
+                if let Some(file) = current_file {
+                    detail = detail.with_file(file);
+                }
+                if let Some(line_num) = current_line {
+                    detail = detail.with_line(line_num);
+                }
+                if let Some(col) = current_column {
+                    detail = detail.with_column(col);
+                }
+                failures.push(detail);
+            }
+        }
+
+        failures
+    }
+
+    /// Format a summary of clippy failures for the details field.
+    fn format_clippy_summary(failures: &[GateFailureDetail]) -> String {
+        if failures.is_empty() {
+            return "No specific failures extracted".to_string();
+        }
+
+        let mut summary = format!("{} issue(s) found:\n", failures.len());
+        for (i, failure) in failures.iter().enumerate() {
+            if let Some(ref file) = failure.file {
+                if let Some(line) = failure.line {
+                    summary.push_str(&format!(
+                        "{}. {}:{}: {}\n",
+                        i + 1,
+                        file,
+                        line,
+                        failure.message
+                    ));
+                } else {
+                    summary.push_str(&format!("{}. {}: {}\n", i + 1, file, failure.message));
+                }
+            } else {
+                summary.push_str(&format!("{}. {}\n", i + 1, failure.message));
+            }
+        }
+        summary
     }
 
     /// Check code formatting using cargo fmt.
@@ -1371,7 +1631,35 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_clippy_errors_with_errors() {
+    fn test_extract_clippy_errors_with_json() {
+        // Sample clippy JSON output from --message-format=json
+        let stdout = r#"{"reason":"compiler-message","package_id":"test 0.1.0","manifest_path":"/test/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"test","src_path":"/test/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"message":{"rendered":"warning: unused variable: `x`\n --> src/lib.rs:10:9\n  |\n10 |     let x = 5;\n  |         ^ help: if this is intentional, prefix it with an underscore: `_x`\n  |\n  = note: `#[warn(unused_variables)]` on by default\n\n","$message_type":"diagnostic","children":[{"children":[],"code":null,"level":"help","message":"if this is intentional, prefix it with an underscore","rendered":null,"spans":[{"byte_end":150,"byte_start":149,"column_end":10,"column_start":9,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":null,"line_end":10,"line_start":10,"suggested_replacement":"_x","suggestion_applicability":"MachineApplicable","text":[{"highlight_end":10,"highlight_start":9,"text":"    let x = 5;"}]}]}],"code":{"code":"unused_variables","explanation":null},"level":"warning","message":"unused variable: `x`","spans":[{"byte_end":150,"byte_start":149,"column_end":10,"column_start":9,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":null,"line_end":10,"line_start":10,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":10,"highlight_start":9,"text":"    let x = 5;"}]}]}}
+{"reason":"compiler-message","package_id":"test 0.1.0","manifest_path":"/test/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"test","src_path":"/test/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"message":{"rendered":"error[E0382]: use of moved value: `s`\n --> src/lib.rs:15:20\n  |\n13 |     let s = String::from(\"hello\");\n  |         - move occurs because `s` has type `String`\n14 |     takes_ownership(s);\n  |                     - value moved here\n15 |     println!(\"{}\", s);\n  |                    ^ value used here after move\n\n","$message_type":"diagnostic","children":[],"code":{"code":"E0382","explanation":"https://doc.rust-lang.org/error-index.html#E0382"},"level":"error","message":"use of moved value: `s`","spans":[{"byte_end":280,"byte_start":279,"column_end":21,"column_start":20,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":"value used here after move","line_end":15,"line_start":15,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":21,"highlight_start":20,"text":"    println!(\"{}\", s);"}]}]}}"#;
+
+        let result = QualityGateChecker::extract_clippy_errors(stdout, "");
+
+        assert_eq!(result.len(), 2);
+
+        // Check first failure (warning)
+        assert_eq!(result[0].category, FailureCategory::Lint);
+        assert_eq!(result[0].message, "unused variable: `x`");
+        assert_eq!(result[0].file, Some("src/lib.rs".to_string()));
+        assert_eq!(result[0].line, Some(10));
+        assert_eq!(result[0].column, Some(9));
+        assert_eq!(result[0].error_code, Some("unused_variables".to_string()));
+        assert_eq!(result[0].suggestion, Some("_x".to_string()));
+
+        // Check second failure (error)
+        assert_eq!(result[1].category, FailureCategory::Lint);
+        assert_eq!(result[1].message, "use of moved value: `s`");
+        assert_eq!(result[1].file, Some("src/lib.rs".to_string()));
+        assert_eq!(result[1].line, Some(15));
+        assert_eq!(result[1].error_code, Some("E0382".to_string()));
+    }
+
+    #[test]
+    fn test_extract_clippy_errors_text_fallback() {
+        // When JSON parsing fails/returns empty, fall back to text parsing
         let stderr = r#"error: unused variable: `x`
   --> src/main.rs:10:5
    |
@@ -1386,18 +1674,81 @@ warning: function `foo` is never used
 5  | fn foo() {}
    |    ^^^
 "#;
-        let result = QualityGateChecker::extract_clippy_errors(stderr);
+        let result = QualityGateChecker::extract_clippy_errors("", stderr);
 
-        assert!(result.contains("error"));
-        assert!(result.contains("warning"));
-        assert!(result.contains("unused variable"));
+        assert_eq!(result.len(), 2);
+
+        // Check first failure
+        assert_eq!(result[0].category, FailureCategory::Lint);
+        assert!(result[0].message.contains("unused variable"));
+        assert_eq!(result[0].file, Some("src/main.rs".to_string()));
+        assert_eq!(result[0].line, Some(10));
+        assert_eq!(result[0].column, Some(5));
+
+        // Check second failure
+        assert_eq!(result[1].category, FailureCategory::Lint);
+        assert!(result[1].message.contains("function `foo` is never used"));
+        assert_eq!(result[1].file, Some("src/main.rs".to_string()));
+        assert_eq!(result[1].line, Some(5));
     }
 
     #[test]
     fn test_extract_clippy_errors_empty() {
-        let stderr = "";
-        let result = QualityGateChecker::extract_clippy_errors(stderr);
+        let result = QualityGateChecker::extract_clippy_errors("", "");
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_clippy_errors_limit_20() {
+        // Generate more than 20 JSON messages
+        let mut stdout = String::new();
+        for i in 1..=25 {
+            let json = format!(
+                r#"{{"reason":"compiler-message","package_id":"test 0.1.0","manifest_path":"/test/Cargo.toml","target":{{"kind":["lib"],"crate_types":["lib"],"name":"test","src_path":"/test/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true}},"message":{{"rendered":"warning: unused variable\n","$message_type":"diagnostic","children":[],"code":{{"code":"unused_variables","explanation":null}},"level":"warning","message":"unused variable {}","spans":[{{"byte_end":150,"byte_start":149,"column_end":10,"column_start":9,"expansion":null,"file_name":"src/lib.rs","is_primary":true,"label":null,"line_end":{},"line_start":{},"suggested_replacement":null,"suggestion_applicability":null,"text":[]}}]}}}}"#,
+                i, i, i
+            );
+            stdout.push_str(&json);
+            stdout.push('\n');
+        }
+
+        let result = QualityGateChecker::extract_clippy_errors(&stdout, "");
+
+        // Should be limited to 20
+        assert_eq!(result.len(), 20);
+    }
+
+    #[test]
+    fn test_parse_clippy_json_skips_aborting_message() {
+        let stdout = r#"{"reason":"compiler-message","package_id":"test 0.1.0","manifest_path":"/test/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"test","src_path":"/test/src/lib.rs","edition":"2021","doc":true,"doctest":true,"test":true},"message":{"rendered":"error: aborting due to 1 previous error\n","$message_type":"diagnostic","children":[],"code":null,"level":"error","message":"aborting due to 1 previous error","spans":[]}}"#;
+
+        let result = QualityGateChecker::parse_clippy_json(stdout);
+
+        // Should skip the "aborting due to" message
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_clippy_summary() {
+        let failures = vec![
+            GateFailureDetail::new(FailureCategory::Lint, "unused variable")
+                .with_file("src/lib.rs")
+                .with_line(10),
+            GateFailureDetail::new(FailureCategory::Lint, "missing docs"),
+        ];
+
+        let summary = QualityGateChecker::format_clippy_summary(&failures);
+
+        assert!(summary.contains("2 issue(s) found"));
+        assert!(summary.contains("src/lib.rs:10"));
+        assert!(summary.contains("unused variable"));
+        assert!(summary.contains("missing docs"));
+    }
+
+    #[test]
+    fn test_format_clippy_summary_empty() {
+        let failures: Vec<GateFailureDetail> = vec![];
+        let summary = QualityGateChecker::format_clippy_summary(&failures);
+        assert_eq!(summary, "No specific failures extracted");
     }
 
     // Format gate tests

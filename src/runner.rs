@@ -780,6 +780,10 @@ impl Runner {
             PauseReason::UserRequested => "User requested".to_string(),
             PauseReason::Timeout => "Timeout".to_string(),
             PauseReason::IterationBoundary => "Iteration boundary".to_string(),
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures,
+                threshold,
+            } => format!("Circuit breaker ({}/{})", consecutive_failures, threshold),
             PauseReason::Error(msg) => {
                 let truncated = if msg.len() > 40 {
                     format!("{}...", &msg[..37])
@@ -859,6 +863,16 @@ impl Runner {
             PauseReason::IterationBoundary => {
                 println!("  Type:        Iteration Boundary");
                 println!("  Details:     Checkpoint saved at iteration start for recovery");
+            }
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures,
+                threshold,
+            } => {
+                println!("  Type:        Circuit Breaker Triggered");
+                println!(
+                    "  Details:     {} consecutive failures (threshold: {})",
+                    consecutive_failures, threshold
+                );
             }
             PauseReason::Error(msg) => {
                 println!("  Type:        Error");

@@ -928,6 +928,13 @@ fn run_status(dir: Option<PathBuf>, quiet: bool) -> Result<ExitCode, Box<dyn std
                     PauseReason::Timeout => "Timeout".to_string(),
                     PauseReason::IterationBoundary => "Iteration boundary".to_string(),
                     PauseReason::Error(msg) => format!("Error: {}", msg),
+                    PauseReason::CircuitBreakerTriggered {
+                        consecutive_failures,
+                        threshold,
+                    } => format!(
+                        "Circuit breaker triggered ({}/{} failures)",
+                        consecutive_failures, threshold
+                    ),
                 };
                 println!("Pause Reason: {}", reason_str);
 
@@ -972,6 +979,11 @@ fn run_status(dir: Option<PathBuf>, quiet: bool) -> Result<ExitCode, Box<dyn std
                     PauseReason::Error(_) => {
                         println!(
                             "  Review the error above, fix any issues, then run 'ralph run' to resume."
+                        );
+                    }
+                    PauseReason::CircuitBreakerTriggered { .. } => {
+                        println!(
+                            "  Circuit breaker triggered. Review recent failures and run 'ralph run' to resume."
                         );
                     }
                 }
