@@ -58,6 +58,11 @@ npm run dev
 - Codex bypasses approvals/sandbox only when `RALPH_CODEX_DANGEROUS=1` is set
 - Codex runs with `--json` output for non-interactive execution
 - Always update AGENTS.md with discovered patterns for future iterations
+- Evidence persistence lives under `.ralph/evidence/runs` with per-run `run.json` metadata and `events.jsonl` records; retention is driven by `RALPH_EVIDENCE_RETENTION_DAYS`
+- Run metrics snapshots are stored under `.ralph/runs/<run_id>.json` and include run/step timestamps plus evidence completeness percent
+- Run exports treat missing evidence steps as incomplete even if a run complete event exists
+- Clippy prefers `io::Error::other` for serde failures; add targeted `#[allow(clippy::too_many_arguments)]` only when refactors are not worth the churn
+- Ensure run completion evidence is emitted even when reconciliation fails in parallel execution
 
 ---
 
