@@ -109,6 +109,8 @@ pub struct ParallelExecutionState {
     pub queue_capacity: usize,
     /// Queue policy label
     pub queue_policy: String,
+    /// Circuit breaker state: (current_failures, threshold)
+    pub circuit_breaker: Option<(u32, u32)>,
 }
 
 impl ParallelExecutionState {
@@ -123,6 +125,19 @@ impl ParallelExecutionState {
             queue_size: 0,
             queue_capacity: 0,
             queue_policy: "unknown".to_string(),
+            circuit_breaker: None,
+        }
+    }
+
+    /// Update circuit breaker state.
+    pub fn update_circuit_breaker(&mut self, current_failures: u32, threshold: u32) {
+        self.circuit_breaker = Some((current_failures, threshold));
+    }
+
+    /// Reset circuit breaker counter (on story success).
+    pub fn reset_circuit_breaker(&mut self) {
+        if let Some((_, threshold)) = self.circuit_breaker {
+            self.circuit_breaker = Some((0, threshold));
         }
     }
 
@@ -381,6 +396,45 @@ impl ParallelStatusRenderer {
         }
     }
 
+    /// Render the circuit breaker status with color coding.
+    ///
+    /// Colors based on percentage of threshold:
+    /// - Normal (muted) when < 60% of threshold
+    /// - Yellow (warning) when >= 60% of threshold (3/5)
+    /// - Red (error) when >= 80% of threshold (4/5)
+    pub fn render_circuit_breaker_status(&self, state: &ParallelExecutionState) -> Option<String> {
+        let (current, threshold) = state.circuit_breaker?;
+
+        // Only show if threshold > 0 to avoid division by zero
+        if threshold == 0 {
+            return None;
+        }
+
+        let percentage = (current as f64 / threshold as f64) * 100.0;
+        let status_text = format!("Failures: {}/{}", current, threshold);
+
+        if !self.colors_enabled {
+            return Some(status_text);
+        }
+
+        // Color coding based on percentage:
+        // - >= 80% (4/5): Red (error)
+        // - >= 60% (3/5): Yellow (warning)
+        // - < 60%: Gray (muted)
+        let colored = if percentage >= 80.0 {
+            // Red - critical threshold approaching
+            status_text.color(self.theme.error).bold().to_string()
+        } else if percentage >= 60.0 {
+            // Yellow - warning threshold
+            status_text.color(self.theme.warning).bold().to_string()
+        } else {
+            // Gray - normal
+            status_text.color(self.theme.muted).to_string()
+        };
+
+        Some(colored)
+    }
+
     /// Render the status counts (running, completed, pending, failed).
     pub fn render_status_counts(&self, state: &ParallelExecutionState) -> String {
         let running = state.running_count();
@@ -392,9 +446,15 @@ impl ParallelStatusRenderer {
             state.queue_size, state.queue_capacity, state.queue_policy
         );
 
+        // Build circuit breaker status if available
+        let cb_status = self
+            .render_circuit_breaker_status(state)
+            .map(|s| format!(" | {}", s))
+            .unwrap_or_default();
+
         if self.colors_enabled {
             format!(
-                "{} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {}{}",
                 format!("{}:", StoryStatus::InProgress.icon())
                     .color(self.theme.in_progress)
                     .bold(),
@@ -415,11 +475,12 @@ impl ParallelStatusRenderer {
                 } else {
                     failed.to_string().color(self.theme.muted).to_string()
                 },
-                queue_info.color(self.theme.muted)
+                queue_info.color(self.theme.muted),
+                cb_status
             )
         } else {
             format!(
-                "{}: {} {}: {} {}: {} {}: {} {}",
+                "{}: {} {}: {} {}: {} {}: {} {}{}",
                 StoryStatus::InProgress.icon(),
                 running,
                 StoryStatus::Completed.icon(),
@@ -428,7 +489,8 @@ impl ParallelStatusRenderer {
                 pending,
                 StoryStatus::Failed.icon(),
                 failed,
-                queue_info
+                queue_info,
+                cb_status
             )
         }
     }

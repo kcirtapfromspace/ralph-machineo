@@ -185,6 +185,22 @@ pub enum ParallelUIEvent {
 
     /// Immediate interrupt requested (Ctrl+C).
     ImmediateInterrupt,
+
+    /// Circuit breaker status update showing current failure count.
+    CircuitBreakerStatus {
+        /// Current number of consecutive/cumulative failures.
+        current_failures: u32,
+        /// Threshold at which the circuit breaker will trigger.
+        threshold: u32,
+    },
+
+    /// Circuit breaker has been triggered.
+    CircuitBreakerTriggered {
+        /// Number of failures that triggered the circuit breaker.
+        failures: u32,
+        /// Threshold that was exceeded.
+        threshold: u32,
+    },
 }
 
 impl ParallelUIEvent {
@@ -203,6 +219,8 @@ impl ParallelUIEvent {
             Self::KeyboardToggle { .. } => None,
             Self::GracefulQuitRequested => None,
             Self::ImmediateInterrupt => None,
+            Self::CircuitBreakerStatus { .. } => None,
+            Self::CircuitBreakerTriggered { .. } => None,
         }
     }
 
