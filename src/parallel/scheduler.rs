@@ -78,6 +78,9 @@ pub struct ParallelRunnerConfig {
     /// If a batch takes longer than this, remaining tasks are cancelled.
     /// Default: 30 minutes.
     pub batch_timeout: Duration,
+    /// Number of consecutive failures before circuit breaker triggers.
+    /// Default: 5.
+    pub circuit_breaker_threshold: u32,
 }
 
 impl Default for ParallelRunnerConfig {
@@ -92,6 +95,7 @@ impl Default for ParallelRunnerConfig {
             conflict_strategy: ConflictStrategy::default(),
             timeout_config: TimeoutConfig::default(),
             batch_timeout: Duration::from_secs(1800), // 30 minutes
+            circuit_breaker_threshold: 5,
         }
     }
 }

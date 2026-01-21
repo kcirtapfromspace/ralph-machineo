@@ -66,6 +66,8 @@ pub struct RunnerConfig {
     pub startup_grace_period_seconds: Option<u64>,
     /// Disable checkpointing
     pub no_checkpoint: bool,
+    /// Number of consecutive failures before circuit breaker triggers (None = use default of 5)
+    pub circuit_breaker_threshold: Option<u32>,
 }
 
 impl Default for RunnerConfig {
@@ -86,6 +88,7 @@ impl Default for RunnerConfig {
             heartbeat_threshold: None,
             startup_grace_period_seconds: None,
             no_checkpoint: false,
+            circuit_breaker_threshold: None,
         }
     }
 }
