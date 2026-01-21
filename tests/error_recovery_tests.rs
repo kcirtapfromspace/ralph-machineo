@@ -858,3 +858,134 @@ fn test_error_recovery_flow_resume_from_checkpoint() {
     manager.clear().expect("Failed to clear");
     assert!(!manager.exists());
 }
+
+// ============================================================================
+// Circuit Breaker Tests
+// ============================================================================
+
+#[test]
+fn test_circuit_breaker_checkpoint_save_and_load() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let manager = CheckpointManager::new(temp_dir.path()).expect("Failed to create manager");
+
+    // Simulate circuit breaker triggered after 5 consecutive failures (threshold 5)
+    let checkpoint = Checkpoint::new(
+        Some(StoryCheckpoint::new("US-003", 3, 10)),
+        PauseReason::CircuitBreakerTriggered {
+            consecutive_failures: 5,
+            threshold: 5,
+        },
+        vec!["src/broken.rs".to_string()],
+    );
+
+    manager.save(&checkpoint).expect("Failed to save");
+    let loaded = manager.load().expect("Failed to load").unwrap();
+
+    // Verify circuit breaker pause reason was preserved
+    match &loaded.pause_reason {
+        PauseReason::CircuitBreakerTriggered {
+            consecutive_failures,
+            threshold,
+        } => {
+            assert_eq!(*consecutive_failures, 5);
+            assert_eq!(*threshold, 5);
+        }
+        other => panic!("Expected CircuitBreakerTriggered, got {:?}", other),
+    }
+
+    // Verify story state was preserved
+    let story = loaded.current_story.as_ref().unwrap();
+    assert_eq!(story.story_id, "US-003");
+    assert_eq!(story.iteration, 3);
+}
+
+#[test]
+fn test_circuit_breaker_with_custom_threshold() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let manager = CheckpointManager::new(temp_dir.path()).expect("Failed to create manager");
+
+    // Simulate circuit breaker triggered with custom threshold of 3
+    let checkpoint = Checkpoint::new(
+        Some(StoryCheckpoint::new("US-007", 1, 10)),
+        PauseReason::CircuitBreakerTriggered {
+            consecutive_failures: 3,
+            threshold: 3,
+        },
+        vec![],
+    );
+
+    manager.save(&checkpoint).expect("Failed to save");
+    let loaded = manager.load().expect("Failed to load").unwrap();
+
+    match &loaded.pause_reason {
+        PauseReason::CircuitBreakerTriggered {
+            consecutive_failures,
+            threshold,
+        } => {
+            assert_eq!(*consecutive_failures, 3);
+            assert_eq!(*threshold, 3);
+        }
+        other => panic!("Expected CircuitBreakerTriggered, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_circuit_breaker_counter_simulation() {
+    // Simulate the circuit breaker counter logic as it would work in run_sequential
+    let circuit_breaker_threshold: u32 = 5;
+    let mut consecutive_failures: u32 = 0;
+
+    // Simulate 4 consecutive failures (should not trigger)
+    for _ in 0..4 {
+        consecutive_failures += 1;
+        assert!(
+            consecutive_failures < circuit_breaker_threshold,
+            "Should not trigger circuit breaker yet"
+        );
+    }
+    assert_eq!(consecutive_failures, 4);
+
+    // Simulate success - counter resets
+    consecutive_failures = 0;
+    assert_eq!(consecutive_failures, 0);
+
+    // Simulate 5 consecutive failures (should trigger at 5th)
+    for i in 1..=5 {
+        consecutive_failures += 1;
+        if consecutive_failures >= circuit_breaker_threshold {
+            assert_eq!(i, 5, "Circuit breaker should trigger at 5th failure");
+            break;
+        }
+    }
+    assert_eq!(consecutive_failures, 5);
+}
+
+#[test]
+fn test_circuit_breaker_display_message() {
+    let reason = PauseReason::CircuitBreakerTriggered {
+        consecutive_failures: 5,
+        threshold: 5,
+    };
+
+    let display = format!("{}", reason);
+    assert!(display.contains("Circuit breaker triggered"));
+    assert!(display.contains("5 consecutive failures"));
+}
+
+#[test]
+fn test_circuit_breaker_serialization_roundtrip() {
+    let reason = PauseReason::CircuitBreakerTriggered {
+        consecutive_failures: 7,
+        threshold: 5,
+    };
+
+    let json = serde_json::to_string(&reason).expect("Failed to serialize");
+    let deserialized: PauseReason = serde_json::from_str(&json).expect("Failed to deserialize");
+
+    assert_eq!(reason, deserialized);
+
+    // Verify JSON structure
+    assert!(json.contains("circuit_breaker_triggered"));
+    assert!(json.contains("consecutive_failures"));
+    assert!(json.contains("threshold"));
+}
