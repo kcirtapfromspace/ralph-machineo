@@ -4,8 +4,10 @@
 //! execution metrics across story executions, iterations, and quality gates.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::io;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::iteration::context::ErrorCategory;
@@ -100,6 +102,265 @@ pub struct ExecutionMetrics {
     pub total_execution_time: Duration,
     /// First-time success rate (stories that passed on first iteration)
     pub first_time_success_rate: f64,
+}
+
+/// Metrics for a single step within a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepMetrics {
+    /// Step identifier (typically the story ID)
+    pub step_id: String,
+    /// Number of attempts made for this step
+    pub attempts: u32,
+    /// Step duration
+    pub duration: Duration,
+    /// Whether the step succeeded
+    pub success: bool,
+    /// Timestamp when step started
+    pub started_at: std::time::SystemTime,
+    /// Timestamp when step completed
+    pub completed_at: std::time::SystemTime,
+    /// Error message if step failed
+    pub error: Option<String>,
+}
+
+impl StepMetrics {
+    fn new(step_id: impl Into<String>) -> Self {
+        let now = std::time::SystemTime::now();
+        Self {
+            step_id: step_id.into(),
+            attempts: 0,
+            duration: Duration::ZERO,
+            success: false,
+            started_at: now,
+            completed_at: now,
+            error: None,
+        }
+    }
+}
+
+/// Aggregated metrics for a single run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMetrics {
+    /// Unique run identifier
+    pub run_id: String,
+    /// Timestamp when run started
+    pub started_at: std::time::SystemTime,
+    /// Timestamp when run completed
+    pub completed_at: std::time::SystemTime,
+    /// Timestamp when metrics snapshot was recorded
+    pub recorded_at: std::time::SystemTime,
+    /// Total run duration
+    pub run_duration: Duration,
+    /// Number of steps expected for the run
+    pub expected_steps: u32,
+    /// Number of steps attempted during the run
+    pub steps_attempted: u32,
+    /// Number of steps completed successfully
+    pub steps_completed: u32,
+    /// Number of step failures
+    pub failures: u32,
+    /// Total retry count across steps
+    pub retries: u32,
+    /// Percentage of steps with evidence recorded
+    pub completeness_percent: f64,
+    /// Per-step durations keyed by step ID
+    pub step_durations: HashMap<String, Duration>,
+    /// Detailed step metrics
+    pub steps: Vec<StepMetrics>,
+}
+
+#[derive(Debug)]
+struct RunMetricsState {
+    run_id: String,
+    started_at: std::time::SystemTime,
+    started_instant: Instant,
+    expected_steps: usize,
+    steps: HashMap<String, StepMetrics>,
+    evidence_steps: HashSet<String>,
+}
+
+/// Thread-safe run metrics collector.
+#[derive(Debug, Clone)]
+pub struct RunMetricsCollector {
+    inner: Arc<Mutex<RunMetricsState>>,
+}
+
+impl RunMetricsCollector {
+    /// Create a new run metrics collector.
+    pub fn new(run_id: impl Into<String>, expected_steps: usize) -> Self {
+        let now = std::time::SystemTime::now();
+        Self {
+            inner: Arc::new(Mutex::new(RunMetricsState {
+                run_id: run_id.into(),
+                started_at: now,
+                started_instant: Instant::now(),
+                expected_steps,
+                steps: HashMap::new(),
+                evidence_steps: HashSet::new(),
+            })),
+        }
+    }
+
+    /// Generate a run ID using timestamp and process ID.
+    pub fn generate_run_id() -> String {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let pid = std::process::id();
+        format!("run-{}-{}", millis, pid)
+    }
+
+    /// Update the expected number of steps for the run.
+    pub fn set_expected_steps(&self, expected_steps: usize) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.expected_steps = expected_steps;
+        }
+    }
+
+    /// Record the start of a step.
+    pub fn start_step(&self, step_id: impl Into<String>) {
+        if let Ok(mut state) = self.inner.lock() {
+            let step_id = step_id.into();
+            state
+                .steps
+                .entry(step_id.clone())
+                .or_insert_with(|| StepMetrics::new(step_id));
+        }
+    }
+
+    /// Record that evidence was captured for a step.
+    pub fn record_evidence_step(&self, step_id: impl Into<String>) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.evidence_steps.insert(step_id.into());
+        }
+    }
+
+    /// Record completion of a step.
+    pub fn complete_step(
+        &self,
+        step_id: &str,
+        success: bool,
+        attempts: u32,
+        duration: Duration,
+        error: Option<String>,
+    ) {
+        if let Ok(mut state) = self.inner.lock() {
+            let entry = state
+                .steps
+                .entry(step_id.to_string())
+                .or_insert_with(|| StepMetrics::new(step_id));
+            entry.attempts = attempts;
+            entry.duration = duration;
+            entry.success = success;
+            entry.completed_at = std::time::SystemTime::now();
+            entry.error = error;
+        }
+    }
+
+    /// Build a run metrics snapshot.
+    pub fn finish(&self) -> RunMetrics {
+        if let Ok(state) = self.inner.lock() {
+            let completed_at = std::time::SystemTime::now();
+            let run_duration = state.started_instant.elapsed();
+            let steps_attempted = state.steps.len() as u32;
+            let steps_completed = state.steps.values().filter(|step| step.success).count() as u32;
+            let failures = steps_attempted.saturating_sub(steps_completed);
+            let retries = state
+                .steps
+                .values()
+                .map(|step| step.attempts.saturating_sub(1))
+                .sum();
+            let evidence_steps = state.evidence_steps.len() as f64;
+            let completeness_percent = if state.expected_steps == 0 {
+                100.0
+            } else {
+                ((evidence_steps / state.expected_steps as f64) * 100.0).min(100.0)
+            };
+            let step_durations = state
+                .steps
+                .iter()
+                .map(|(id, step)| (id.clone(), step.duration))
+                .collect();
+            let steps = state.steps.values().cloned().collect();
+
+            RunMetrics {
+                run_id: state.run_id.clone(),
+                started_at: state.started_at,
+                completed_at,
+                recorded_at: completed_at,
+                run_duration,
+                expected_steps: state.expected_steps as u32,
+                steps_attempted,
+                steps_completed,
+                failures,
+                retries,
+                completeness_percent,
+                step_durations,
+                steps,
+            }
+        } else {
+            RunMetrics {
+                run_id: "run-unknown".to_string(),
+                started_at: std::time::SystemTime::now(),
+                completed_at: std::time::SystemTime::now(),
+                recorded_at: std::time::SystemTime::now(),
+                run_duration: Duration::ZERO,
+                expected_steps: 0,
+                steps_attempted: 0,
+                steps_completed: 0,
+                failures: 0,
+                retries: 0,
+                completeness_percent: 0.0,
+                step_durations: HashMap::new(),
+                steps: Vec::new(),
+            }
+        }
+    }
+}
+
+/// Store run metrics snapshots on disk.
+#[derive(Debug, Clone)]
+pub struct RunMetricsStore {
+    runs_dir: PathBuf,
+}
+
+impl RunMetricsStore {
+    /// Create a new run metrics store rooted at the given base directory.
+    pub fn new(base_dir: impl Into<PathBuf>) -> io::Result<Self> {
+        let base = base_dir.into();
+        let runs_dir = base.join(".ralph").join("runs");
+        std::fs::create_dir_all(&runs_dir)?;
+        Ok(Self { runs_dir })
+    }
+
+    /// Save run metrics to disk.
+    pub fn save(&self, metrics: &RunMetrics) -> io::Result<PathBuf> {
+        let file_name = format!("{}.json", metrics.run_id);
+        let path = self.runs_dir.join(file_name);
+        let temp_path = path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(metrics).map_err(io::Error::other)?;
+        let mut file = std::fs::File::create(&temp_path)?;
+        use std::io::Write;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp_path, &path)?;
+        Ok(path)
+    }
+
+    /// Load run metrics from disk.
+    pub fn load(&self, run_id: &str) -> io::Result<Option<RunMetrics>> {
+        let file_name = format!("{}.json", run_id);
+        let path = self.runs_dir.join(file_name);
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                let metrics = serde_json::from_str(&contents).map_err(io::Error::other)?;
+                Ok(Some(metrics))
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl ExecutionMetrics {
