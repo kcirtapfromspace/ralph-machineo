@@ -22,20 +22,9 @@ jobs:
         id: release
         uses: googleapis/release-please-action@v4
         with:
-          release-type: rust
-          package-name: ralphmacchio
-          # Changelog sections based on conventional commits
-          changelog-types: |
-            [
-              {"type": "feat", "section": "Features", "hidden": false},
-              {"type": "fix", "section": "Bug Fixes", "hidden": false},
-              {"type": "perf", "section": "Performance", "hidden": false},
-              {"type": "refactor", "section": "Refactoring", "hidden": false},
-              {"type": "docs", "section": "Documentation", "hidden": false},
-              {"type": "chore", "section": "Maintenance", "hidden": true},
-              {"type": "ci", "section": "CI/CD", "hidden": true},
-              {"type": "test", "section": "Tests", "hidden": true}
-            ]
+          # Use config file for settings (including extra-files for cli/Cargo.toml)
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
 
   # Trigger release build when a new version is created
   trigger-release:
