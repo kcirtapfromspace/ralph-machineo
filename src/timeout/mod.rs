@@ -26,12 +26,18 @@ pub struct TimeoutConfig {
     pub iteration_timeout: Duration,
 
     /// Interval between heartbeat checks.
-    /// Default: 30 seconds
+    /// Default: 45 seconds
     pub heartbeat_interval: Duration,
 
     /// Number of missed heartbeats before considering execution stalled.
-    /// Default: 3
+    /// Default: 4
     pub missed_heartbeats_threshold: u32,
+
+    /// Initial grace period before heartbeat monitoring begins.
+    /// This allows time for agent startup, MCP server initialization,
+    /// and the first API call before stall detection kicks in.
+    /// Default: 120 seconds (2 minutes)
+    pub startup_grace_period: Duration,
 }
 
 impl Default for TimeoutConfig {
@@ -39,8 +45,9 @@ impl Default for TimeoutConfig {
         Self {
             agent_timeout: Duration::from_secs(600),
             iteration_timeout: Duration::from_secs(900),
-            heartbeat_interval: Duration::from_secs(30),
-            missed_heartbeats_threshold: 3,
+            heartbeat_interval: Duration::from_secs(45),
+            missed_heartbeats_threshold: 4,
+            startup_grace_period: Duration::from_secs(120),
         }
     }
 }
@@ -57,12 +64,14 @@ impl TimeoutConfig {
         iteration_timeout: Duration,
         heartbeat_interval: Duration,
         missed_heartbeats_threshold: u32,
+        startup_grace_period: Duration,
     ) -> Self {
         Self {
             agent_timeout,
             iteration_timeout,
             heartbeat_interval,
             missed_heartbeats_threshold,
+            startup_grace_period,
         }
     }
 
@@ -89,6 +98,14 @@ impl TimeoutConfig {
         self.missed_heartbeats_threshold = threshold;
         self
     }
+
+    /// Sets the startup grace period.
+    /// This is the initial delay before heartbeat monitoring begins,
+    /// allowing time for agent startup and initialization.
+    pub fn with_startup_grace_period(mut self, grace_period: Duration) -> Self {
+        self.startup_grace_period = grace_period;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -110,13 +127,19 @@ mod tests {
     #[test]
     fn test_default_heartbeat_interval() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.heartbeat_interval, Duration::from_secs(30));
+        assert_eq!(config.heartbeat_interval, Duration::from_secs(45));
     }
 
     #[test]
     fn test_default_missed_heartbeats_threshold() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.missed_heartbeats_threshold, 3);
+        assert_eq!(config.missed_heartbeats_threshold, 4);
+    }
+
+    #[test]
+    fn test_default_startup_grace_period() {
+        let config = TimeoutConfig::default();
+        assert_eq!(config.startup_grace_period, Duration::from_secs(120));
     }
 
     #[test]
@@ -133,12 +156,14 @@ mod tests {
             Duration::from_secs(300),
             Duration::from_secs(10),
             5,
+            Duration::from_secs(60),
         );
 
         assert_eq!(config.agent_timeout, Duration::from_secs(120));
         assert_eq!(config.iteration_timeout, Duration::from_secs(300));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(10));
         assert_eq!(config.missed_heartbeats_threshold, 5);
+        assert_eq!(config.startup_grace_period, Duration::from_secs(60));
     }
 
     #[test]
@@ -147,12 +172,14 @@ mod tests {
             .with_agent_timeout(Duration::from_secs(300))
             .with_iteration_timeout(Duration::from_secs(600))
             .with_heartbeat_interval(Duration::from_secs(15))
-            .with_missed_heartbeats_threshold(5);
+            .with_missed_heartbeats_threshold(5)
+            .with_startup_grace_period(Duration::from_secs(90));
 
         assert_eq!(config.agent_timeout, Duration::from_secs(300));
         assert_eq!(config.iteration_timeout, Duration::from_secs(600));
         assert_eq!(config.heartbeat_interval, Duration::from_secs(15));
         assert_eq!(config.missed_heartbeats_threshold, 5);
+        assert_eq!(config.startup_grace_period, Duration::from_secs(90));
     }
 
     #[test]
