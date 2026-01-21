@@ -3,7 +3,7 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 use chrono::Utc;
@@ -16,6 +16,7 @@ use crate::mcp::tools::load_prd::{PrdFile, PrdUserStory};
 use crate::metrics::{RunMetricsCollector, RunMetricsStore};
 use crate::notification::Notification;
 use crate::parallel::scheduler::ParallelRunnerConfig;
+use crate::timeout::TimeoutConfig;
 use crate::ui::{DisplayOptions, TuiRunnerDisplay};
 
 /// User's choice when prompted about an existing checkpoint.
@@ -55,6 +56,12 @@ pub struct RunnerConfig {
     pub no_resume: bool,
     /// Agent timeout override in seconds (None = use default)
     pub timeout_seconds: Option<u64>,
+    /// Heartbeat check interval in seconds (None = use default)
+    pub heartbeat_interval_seconds: Option<u64>,
+    /// Number of missed heartbeats before timeout (None = use default)
+    pub heartbeat_threshold: Option<u32>,
+    /// Initial grace period in seconds before heartbeat monitoring starts (None = use default)
+    pub startup_grace_period_seconds: Option<u64>,
     /// Disable checkpointing
     pub no_checkpoint: bool,
 }
@@ -73,6 +80,9 @@ impl Default for RunnerConfig {
             resume: false,
             no_resume: false,
             timeout_seconds: None,
+            heartbeat_interval_seconds: None,
+            heartbeat_threshold: None,
+            startup_grace_period_seconds: None,
             no_checkpoint: false,
         }
     }
@@ -124,13 +134,36 @@ impl Runner {
         }
     }
 
+    /// Build TimeoutConfig from RunnerConfig, applying any CLI overrides.
+    fn build_timeout_config(&self) -> TimeoutConfig {
+        let mut config = TimeoutConfig::default();
+
+        // Apply CLI overrides if provided
+        if let Some(timeout) = self.config.timeout_seconds {
+            config = config.with_agent_timeout(Duration::from_secs(timeout));
+        }
+        if let Some(interval) = self.config.heartbeat_interval_seconds {
+            config = config.with_heartbeat_interval(Duration::from_secs(interval));
+        }
+        if let Some(threshold) = self.config.heartbeat_threshold {
+            config = config.with_missed_heartbeats_threshold(threshold);
+        }
+        if let Some(grace_period) = self.config.startup_grace_period_seconds {
+            config = config.with_startup_grace_period(Duration::from_secs(grace_period));
+        }
+
+        config
+    }
+
     /// Run all stories until all pass or an error occurs.
     ///
     /// Routes to parallel or sequential execution based on config.parallel.
     pub async fn run(&self) -> RunResult {
         if self.config.parallel {
             // Use parallel execution
-            let parallel_config = self.config.parallel_config.clone().unwrap_or_default();
+            let mut parallel_config = self.config.parallel_config.clone().unwrap_or_default();
+            // Apply CLI timeout overrides to parallel config
+            parallel_config.timeout_config = self.build_timeout_config();
             let parallel_runner = crate::parallel::scheduler::ParallelRunner::new(
                 parallel_config,
                 self.config.clone(),
@@ -404,7 +437,7 @@ impl Runner {
                         agent_command: agent.clone(),
                         max_iterations: remaining_iterations,
                         git_mutex: None, // Sequential execution doesn't need mutex
-                        timeout_config: crate::timeout::TimeoutConfig::default(),
+                        timeout_config: self.build_timeout_config(),
                         ..Default::default()
                     };
 

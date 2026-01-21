@@ -125,6 +125,18 @@ struct Cli {
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,
 
+    /// Heartbeat check interval in seconds (default: 45)
+    #[arg(long, value_name = "SECONDS")]
+    heartbeat_interval: Option<u64>,
+
+    /// Number of missed heartbeats before timeout (default: 4)
+    #[arg(long, value_name = "COUNT")]
+    heartbeat_threshold: Option<u32>,
+
+    /// Initial grace period in seconds before heartbeat monitoring starts (default: 120)
+    #[arg(long, value_name = "SECONDS")]
+    startup_grace_period: Option<u64>,
+
     /// Disable checkpointing
     #[arg(long)]
     no_checkpoint: bool,
@@ -181,6 +193,19 @@ enum Commands {
         /// Agent timeout in seconds (overrides default)
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<u64>,
+
+        /// Heartbeat check interval in seconds (default: 45)
+        #[arg(long, value_name = "SECONDS")]
+        heartbeat_interval: Option<u64>,
+
+        /// Number of missed heartbeats before timeout (default: 4)
+        #[arg(long, value_name = "COUNT")]
+        heartbeat_threshold: Option<u32>,
+
+        /// Initial grace period in seconds before heartbeat monitoring starts (default: 120)
+        /// This allows time for agent startup and MCP server initialization.
+        #[arg(long, value_name = "SECONDS")]
+        startup_grace_period: Option<u64>,
 
         /// Disable checkpointing
         #[arg(long)]
@@ -332,6 +357,13 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!("  --resume                 Resume from checkpoint if available");
             println!("  --no-resume              Skip checkpoint prompt (do not resume)");
             println!("  --timeout <SECONDS>      Agent timeout in seconds (overrides default)");
+            println!("  --heartbeat-interval <SECONDS>  Heartbeat check interval [default: 45]");
+            println!(
+                "  --heartbeat-threshold <COUNT>   Missed heartbeats before timeout [default: 4]"
+            );
+            println!(
+                "  --startup-grace-period <SECONDS>  Initial startup grace period [default: 120]"
+            );
             println!("  --no-checkpoint          Disable checkpointing");
             println!("  --agent <CMD>            Agent command (claude, codex, amp, or custom)");
             println!("  -h, --help               Print help information");
@@ -349,6 +381,9 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             resume,
             no_resume,
             timeout,
+            heartbeat_interval,
+            heartbeat_threshold,
+            startup_grace_period,
             no_checkpoint,
             help: false,
         }) => {
@@ -364,6 +399,9 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 resume,
                 no_resume,
                 timeout,
+                heartbeat_interval,
+                heartbeat_threshold,
+                startup_grace_period,
                 no_checkpoint,
                 agent.clone(),
             )
@@ -505,6 +543,9 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cli.resume,
                     cli.no_resume,
                     cli.timeout,
+                    cli.heartbeat_interval,
+                    cli.heartbeat_threshold,
+                    cli.startup_grace_period,
                     cli.no_checkpoint,
                     cli.agent.clone(),
                 )
@@ -561,6 +602,9 @@ async fn run_stories(
     resume: bool,
     no_resume: bool,
     timeout: Option<u64>,
+    heartbeat_interval: Option<u64>,
+    heartbeat_threshold: Option<u32>,
+    startup_grace_period: Option<u64>,
     no_checkpoint: bool,
     agent: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -626,6 +670,9 @@ async fn run_stories(
         resume,
         no_resume,
         timeout_seconds: timeout,
+        heartbeat_interval_seconds: heartbeat_interval,
+        heartbeat_threshold,
+        startup_grace_period_seconds: startup_grace_period,
         no_checkpoint,
     };
 
