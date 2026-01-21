@@ -446,7 +446,10 @@ mod tests {
 
         assert_eq!(monitor.config().heartbeat_interval, Duration::from_secs(5));
         assert_eq!(monitor.config().missed_heartbeats_threshold, 10);
-        assert_eq!(monitor.config().startup_grace_period, Duration::from_secs(60));
+        assert_eq!(
+            monitor.config().startup_grace_period,
+            Duration::from_secs(60)
+        );
     }
 
     #[tokio::test]
@@ -542,7 +545,10 @@ mod tests {
 
         // No events should be sent during grace period
         let event = receiver.try_recv();
-        assert!(event.is_err(), "Should not receive events during grace period");
+        assert!(
+            event.is_err(),
+            "Should not receive events during grace period"
+        );
 
         // Wait for grace period to complete plus some heartbeat intervals
         // Grace period: 100ms, then heartbeat checks at 30ms intervals
@@ -564,7 +570,9 @@ mod tests {
 
         // Should have received a stall detection after grace period
         assert!(
-            events.iter().any(|e| matches!(e, HeartbeatEvent::StallDetected(_))),
+            events
+                .iter()
+                .any(|e| matches!(e, HeartbeatEvent::StallDetected(_))),
             "Expected stall detection after grace period"
         );
     }
@@ -589,6 +597,9 @@ mod tests {
 
         // No events should have been sent
         let event = receiver.try_recv();
-        assert!(event.is_err(), "Should not receive events when stopped during grace period");
+        assert!(
+            event.is_err(),
+            "Should not receive events when stopped during grace period"
+        );
     }
 }

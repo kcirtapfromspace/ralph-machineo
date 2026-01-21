@@ -358,8 +358,12 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!("  --no-resume              Skip checkpoint prompt (do not resume)");
             println!("  --timeout <SECONDS>      Agent timeout in seconds (overrides default)");
             println!("  --heartbeat-interval <SECONDS>  Heartbeat check interval [default: 45]");
-            println!("  --heartbeat-threshold <COUNT>   Missed heartbeats before timeout [default: 4]");
-            println!("  --startup-grace-period <SECONDS>  Initial startup grace period [default: 120]");
+            println!(
+                "  --heartbeat-threshold <COUNT>   Missed heartbeats before timeout [default: 4]"
+            );
+            println!(
+                "  --startup-grace-period <SECONDS>  Initial startup grace period [default: 120]"
+            );
             println!("  --no-checkpoint          Disable checkpointing");
             println!("  --agent <CMD>            Agent command (claude, codex, amp, or custom)");
             println!("  -h, --help               Print help information");
