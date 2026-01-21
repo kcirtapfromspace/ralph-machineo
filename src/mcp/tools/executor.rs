@@ -829,6 +829,12 @@ impl StoryExecutor {
                         Ok(Some(text)) => {
                             // Activity detected - update heartbeat
                             heartbeat_monitor.pulse().await;
+
+                            // Stream output to display callback if configured
+                            if let Some(ref callback) = self.display_callback {
+                                callback.on_agent_output(&text, false);
+                            }
+
                             if codex_json {
                                 if let Some((parsed, is_error)) = extract_codex_json_line(&text) {
                                     let target = if is_error {
@@ -867,6 +873,12 @@ impl StoryExecutor {
                         Ok(Some(text)) => {
                             // Activity detected - update heartbeat
                             heartbeat_monitor.pulse().await;
+
+                            // Stream output to display callback if configured
+                            if let Some(ref callback) = self.display_callback {
+                                callback.on_agent_output(&text, true);
+                            }
+
                             if codex_json {
                                 if let Some((parsed, _is_error)) = extract_codex_json_line(&text) {
                                     stderr_output.push_str(&parsed);

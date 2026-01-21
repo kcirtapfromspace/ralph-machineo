@@ -17,7 +17,9 @@ use crate::metrics::{RunMetricsCollector, RunMetricsStore};
 use crate::notification::Notification;
 use crate::parallel::scheduler::ParallelRunnerConfig;
 use crate::timeout::TimeoutConfig;
-use crate::ui::{DisplayOptions, TuiRunnerDisplay};
+use crate::ui::{
+    new_shared_activity_state, DisplayOptions, StreamingDisplayCallback, TuiRunnerDisplay,
+};
 
 /// User's choice when prompted about an existing checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +201,17 @@ impl Runner {
         // Create TUI display with display options
         let mut display =
             TuiRunnerDisplay::with_display_options(self.config.display_options.clone());
+
+        // Create shared activity state for real-time status updates
+        let shared_activity = new_shared_activity_state();
+        display.set_shared_activity(shared_activity.clone());
+
+        // Create streaming callback for real-time agent output
+        let streaming_callback = std::sync::Arc::new(StreamingDisplayCallback::with_shared_activity(
+            display.toggle_state(),
+            &self.config.display_options,
+            shared_activity,
+        ));
 
         let mut evidence = match EvidenceWriter::try_new(&self.config.working_dir, run_id.clone()) {
             Ok(mut writer) => {
@@ -441,7 +454,8 @@ impl Runner {
                         ..Default::default()
                     };
 
-                    let executor = StoryExecutor::new(executor_config);
+                    let executor = StoryExecutor::new(executor_config)
+                        .with_display_callback(streaming_callback.clone());
                     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
                     let story_id = story.id.clone();
