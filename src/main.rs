@@ -125,15 +125,20 @@ struct Cli {
     #[arg(long, value_name = "SECONDS")]
     timeout: Option<u64>,
 
-    /// Heartbeat check interval in seconds (default: 45)
+    /// Heartbeat check interval in seconds. Stall detection triggers after
+    /// interval × threshold seconds of no agent output. Recommended range: 30-120s.
+    /// Example: With interval=60s and threshold=5, stall detection triggers after 300s.
+    /// (default: 60)
     #[arg(long, value_name = "SECONDS")]
     heartbeat_interval: Option<u64>,
 
-    /// Number of missed heartbeats before timeout (default: 4)
+    /// Number of missed heartbeats before timeout. The effective stall timeout is
+    /// heartbeat_interval × heartbeat_threshold seconds. (default: 5)
     #[arg(long, value_name = "COUNT")]
     heartbeat_threshold: Option<u32>,
 
-    /// Initial grace period in seconds before heartbeat monitoring starts (default: 120)
+    /// Initial grace period in seconds before heartbeat monitoring starts.
+    /// Allows time for agent startup and MCP server initialization. (default: 120)
     #[arg(long, value_name = "SECONDS")]
     startup_grace_period: Option<u64>,
 
@@ -194,16 +199,20 @@ enum Commands {
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<u64>,
 
-        /// Heartbeat check interval in seconds (default: 45)
+        /// Heartbeat check interval in seconds. Stall detection triggers after
+        /// interval × threshold seconds of no agent output. Recommended range: 30-120s.
+        /// Example: With interval=60s and threshold=5, stall detection triggers after 300s.
+        /// (default: 60)
         #[arg(long, value_name = "SECONDS")]
         heartbeat_interval: Option<u64>,
 
-        /// Number of missed heartbeats before timeout (default: 4)
+        /// Number of missed heartbeats before timeout. The effective stall timeout is
+        /// heartbeat_interval × heartbeat_threshold seconds. (default: 5)
         #[arg(long, value_name = "COUNT")]
         heartbeat_threshold: Option<u32>,
 
-        /// Initial grace period in seconds before heartbeat monitoring starts (default: 120)
-        /// This allows time for agent startup and MCP server initialization.
+        /// Initial grace period in seconds before heartbeat monitoring starts.
+        /// Allows time for agent startup and MCP server initialization. (default: 120)
         #[arg(long, value_name = "SECONDS")]
         startup_grace_period: Option<u64>,
 
@@ -357,10 +366,11 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             println!("  --resume                 Resume from checkpoint if available");
             println!("  --no-resume              Skip checkpoint prompt (do not resume)");
             println!("  --timeout <SECONDS>      Agent timeout in seconds (overrides default)");
-            println!("  --heartbeat-interval <SECONDS>  Heartbeat check interval [default: 45]");
+            println!("  --heartbeat-interval <SECONDS>  Heartbeat check interval [default: 60]");
             println!(
-                "  --heartbeat-threshold <COUNT>   Missed heartbeats before timeout [default: 4]"
+                "  --heartbeat-threshold <COUNT>   Missed heartbeats before timeout [default: 5]"
             );
+            println!("                                  (effective timeout = interval × threshold = 300s)");
             println!(
                 "  --startup-grace-period <SECONDS>  Initial startup grace period [default: 120]"
             );

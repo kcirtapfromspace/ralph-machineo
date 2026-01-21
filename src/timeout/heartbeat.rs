@@ -17,11 +17,23 @@ use super::TimeoutConfig;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeartbeatEvent {
     /// Warning: heartbeats are being missed but threshold not yet reached.
-    /// Contains the number of missed heartbeats.
-    Warning(u32),
+    Warning {
+        /// Number of missed heartbeats.
+        missed: u32,
+        /// Elapsed seconds since last heartbeat.
+        elapsed_secs: u64,
+        /// Seconds until stall detection triggers.
+        remaining_secs: u64,
+    },
     /// Stall detected: missed heartbeats threshold has been reached.
-    /// Contains the number of missed heartbeats.
-    StallDetected(u32),
+    StallDetected {
+        /// Number of missed heartbeats.
+        missed: u32,
+        /// Elapsed seconds since last heartbeat.
+        elapsed_secs: u64,
+        /// Threshold in seconds that was exceeded.
+        threshold_secs: u64,
+    },
 }
 
 /// Heartbeat monitor for detecting stalled agent execution.
@@ -49,8 +61,12 @@ pub enum HeartbeatEvent {
 /// // Check for events
 /// if let Some(event) = receiver.try_recv().ok() {
 ///     match event {
-///         HeartbeatEvent::Warning(missed) => println!("Warning: {} missed", missed),
-///         HeartbeatEvent::StallDetected(missed) => println!("Stall: {} missed", missed),
+///         HeartbeatEvent::Warning { missed, elapsed_secs, remaining_secs } => {
+///             println!("Warning: {} missed, {}s elapsed, {}s until stall", missed, elapsed_secs, remaining_secs);
+///         }
+///         HeartbeatEvent::StallDetected { missed, elapsed_secs, threshold_secs } => {
+///             println!("Stall: {} missed, {}s elapsed (threshold: {}s)", missed, elapsed_secs, threshold_secs);
+///         }
 ///     }
 /// }
 ///
@@ -177,17 +193,32 @@ impl HeartbeatMonitor {
 
                 // Calculate number of missed heartbeats
                 let missed = (elapsed.as_secs_f64() / interval.as_secs_f64()).floor() as u32;
+                let elapsed_secs = elapsed.as_secs();
+                let threshold_secs = interval.as_secs() * threshold as u64;
 
                 if missed >= threshold {
                     // Stall detected
-                    let _ = sender.send(HeartbeatEvent::StallDetected(missed)).await;
+                    let _ = sender
+                        .send(HeartbeatEvent::StallDetected {
+                            missed,
+                            elapsed_secs,
+                            threshold_secs,
+                        })
+                        .await;
                     // Reset warning tracking after stall
                     last_warning_sent = None;
                 } else if missed >= threshold.saturating_sub(1) && missed > 0 {
                     // Warning threshold reached (threshold - 1 missed beats)
                     // Only send warning if we haven't sent one for this level
                     if last_warning_sent != Some(missed) {
-                        let _ = sender.send(HeartbeatEvent::Warning(missed)).await;
+                        let remaining_secs = threshold_secs.saturating_sub(elapsed_secs);
+                        let _ = sender
+                            .send(HeartbeatEvent::Warning {
+                                missed,
+                                elapsed_secs,
+                                remaining_secs,
+                            })
+                            .await;
                         last_warning_sent = Some(missed);
                     }
                 } else if missed == 0 {
@@ -331,7 +362,7 @@ mod tests {
         assert!(event.is_ok());
         let event = event.unwrap();
         assert!(event.is_some());
-        assert!(matches!(event.unwrap(), HeartbeatEvent::Warning(_)));
+        assert!(matches!(event.unwrap(), HeartbeatEvent::Warning { .. }));
     }
 
     #[tokio::test]
@@ -364,7 +395,7 @@ mod tests {
         // Should have received a stall detection
         assert!(events
             .iter()
-            .any(|e| matches!(e, HeartbeatEvent::StallDetected(_))));
+            .any(|e| matches!(e, HeartbeatEvent::StallDetected { .. })));
     }
 
     #[tokio::test]
@@ -404,10 +435,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_heartbeat_event_equality() {
-        let warning1 = HeartbeatEvent::Warning(2);
-        let warning2 = HeartbeatEvent::Warning(2);
-        let warning3 = HeartbeatEvent::Warning(3);
-        let stall = HeartbeatEvent::StallDetected(3);
+        let warning1 = HeartbeatEvent::Warning {
+            missed: 2,
+            elapsed_secs: 100,
+            remaining_secs: 50,
+        };
+        let warning2 = HeartbeatEvent::Warning {
+            missed: 2,
+            elapsed_secs: 100,
+            remaining_secs: 50,
+        };
+        let warning3 = HeartbeatEvent::Warning {
+            missed: 3,
+            elapsed_secs: 150,
+            remaining_secs: 0,
+        };
+        let stall = HeartbeatEvent::StallDetected {
+            missed: 3,
+            elapsed_secs: 150,
+            threshold_secs: 150,
+        };
 
         assert_eq!(warning1, warning2);
         assert_ne!(warning1, warning3);
@@ -416,21 +463,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_heartbeat_event_debug() {
-        let warning = HeartbeatEvent::Warning(2);
-        let stall = HeartbeatEvent::StallDetected(3);
+        let warning = HeartbeatEvent::Warning {
+            missed: 2,
+            elapsed_secs: 100,
+            remaining_secs: 50,
+        };
+        let stall = HeartbeatEvent::StallDetected {
+            missed: 3,
+            elapsed_secs: 150,
+            threshold_secs: 150,
+        };
 
         let warning_debug = format!("{:?}", warning);
         let stall_debug = format!("{:?}", stall);
 
         assert!(warning_debug.contains("Warning"));
-        assert!(warning_debug.contains("2"));
+        assert!(warning_debug.contains("missed: 2"));
+        assert!(warning_debug.contains("elapsed_secs: 100"));
         assert!(stall_debug.contains("StallDetected"));
-        assert!(stall_debug.contains("3"));
+        assert!(stall_debug.contains("missed: 3"));
+        assert!(stall_debug.contains("threshold_secs: 150"));
     }
 
     #[tokio::test]
     async fn test_heartbeat_event_clone() {
-        let warning = HeartbeatEvent::Warning(2);
+        let warning = HeartbeatEvent::Warning {
+            missed: 2,
+            elapsed_secs: 100,
+            remaining_secs: 50,
+        };
         let cloned = warning.clone();
         assert_eq!(warning, cloned);
     }
@@ -511,10 +572,10 @@ mod tests {
         // Should have warning(s) and stall detection
         let has_warning = events
             .iter()
-            .any(|e| matches!(e, HeartbeatEvent::Warning(_)));
+            .any(|e| matches!(e, HeartbeatEvent::Warning { .. }));
         let has_stall = events
             .iter()
-            .any(|e| matches!(e, HeartbeatEvent::StallDetected(_)));
+            .any(|e| matches!(e, HeartbeatEvent::StallDetected { .. }));
 
         assert!(has_warning, "Expected warning event");
         assert!(has_stall, "Expected stall detection event");
@@ -572,7 +633,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, HeartbeatEvent::StallDetected(_))),
+                .any(|e| matches!(e, HeartbeatEvent::StallDetected { .. })),
             "Expected stall detection after grace period"
         );
     }

@@ -563,8 +563,8 @@ fn test_timeout_config_defaults() {
 
     assert_eq!(config.agent_timeout, Duration::from_secs(600));
     assert_eq!(config.iteration_timeout, Duration::from_secs(900));
-    assert_eq!(config.heartbeat_interval, Duration::from_secs(45));
-    assert_eq!(config.missed_heartbeats_threshold, 4);
+    assert_eq!(config.heartbeat_interval, Duration::from_secs(60));
+    assert_eq!(config.missed_heartbeats_threshold, 5);
     assert_eq!(config.startup_grace_period, Duration::from_secs(120));
 }
 
@@ -631,7 +631,7 @@ async fn test_heartbeat_monitor_warning_on_missed_beats() {
     let event = event.unwrap();
     assert!(event.is_some(), "Event should be present");
     assert!(
-        matches!(event.unwrap(), HeartbeatEvent::Warning(_)),
+        matches!(event.unwrap(), HeartbeatEvent::Warning { .. }),
         "Should be a warning event"
     );
 }
@@ -664,7 +664,7 @@ async fn test_heartbeat_monitor_stall_detection() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, HeartbeatEvent::StallDetected(_))),
+            .any(|e| matches!(e, HeartbeatEvent::StallDetected { .. })),
         "Should have stall detection event"
     );
 }
@@ -815,7 +815,7 @@ async fn test_error_recovery_flow_pause_on_stall() {
     // Check for stall event
     let mut stall_detected = false;
     while let Ok(event) = tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await {
-        if let Some(HeartbeatEvent::StallDetected(_)) = event {
+        if let Some(HeartbeatEvent::StallDetected { .. }) = event {
             stall_detected = true;
             break;
         }

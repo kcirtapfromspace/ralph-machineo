@@ -774,18 +774,18 @@ impl StoryExecutor {
                 // Check for heartbeat events
                 event = heartbeat_receiver.recv() => {
                     match event {
-                        Some(HeartbeatEvent::Warning(missed)) => {
-                            // Log warning about missed heartbeats
+                        Some(HeartbeatEvent::Warning { missed, elapsed_secs, remaining_secs }) => {
+                            // Log warning about missed heartbeats with actionable info
                             eprintln!(
-                                "Warning: Agent stall detected - {} missed heartbeats (iteration {})",
-                                missed, iteration
+                                "Warning: No agent output for {}s ({} heartbeat intervals). Stall detection in {}s unless activity resumes. (iteration {})",
+                                elapsed_secs, missed, remaining_secs, iteration
                             );
                         }
-                        Some(HeartbeatEvent::StallDetected(missed)) => {
-                            // Stall detected - trigger graceful timeout
+                        Some(HeartbeatEvent::StallDetected { missed, elapsed_secs, threshold_secs }) => {
+                            // Stall detected - trigger graceful timeout with clear explanation
                             eprintln!(
-                                "Agent stall detected: {} missed heartbeats, triggering timeout (iteration {})",
-                                missed, iteration
+                                "Agent stall detected: no output for {}s (exceeded {}s threshold, {} missed heartbeats). Terminating agent. (iteration {})",
+                                elapsed_secs, threshold_secs, missed, iteration
                             );
                             stall_detected = true;
                             // Kill the child process gracefully
