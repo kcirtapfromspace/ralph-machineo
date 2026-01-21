@@ -111,7 +111,8 @@ impl HeartbeatMonitor {
 
     /// Starts the background monitoring task.
     ///
-    /// The task periodically checks the elapsed time since the last heartbeat
+    /// The task waits for an initial grace period (to allow agent startup),
+    /// then periodically checks the elapsed time since the last heartbeat
     /// and sends events when heartbeats are missed:
     ///
     /// - `HeartbeatEvent::Warning` is sent after `missed_heartbeats_threshold - 1`
@@ -136,7 +137,27 @@ impl HeartbeatMonitor {
         let handle = tokio::spawn(async move {
             let interval = config.heartbeat_interval;
             let threshold = config.missed_heartbeats_threshold;
+            let grace_period = config.startup_grace_period;
             let mut last_warning_sent: Option<u32> = None;
+
+            // Wait for the initial grace period before starting monitoring.
+            // This allows time for agent startup, MCP server initialization,
+            // and the first API call to complete.
+            if !grace_period.is_zero() {
+                tokio::time::sleep(grace_period).await;
+
+                // Check if we were stopped during the grace period
+                if stop_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                // Reset the heartbeat timestamp after grace period
+                // so that the first check starts fresh
+                {
+                    let mut last = last_heartbeat.lock().await;
+                    *last = Instant::now();
+                }
+            }
 
             loop {
                 if stop_flag.load(Ordering::SeqCst) {
@@ -223,6 +244,7 @@ mod tests {
         TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(50))
             .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO) // No grace period for fast tests
     }
 
     #[tokio::test]
@@ -268,7 +290,8 @@ mod tests {
     async fn test_no_events_with_regular_heartbeats() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(50))
-            .with_missed_heartbeats_threshold(3);
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO);
 
         let (monitor, mut receiver) = HeartbeatMonitor::new(config);
         monitor.start_monitoring().await;
@@ -290,7 +313,8 @@ mod tests {
     async fn test_warning_after_threshold_minus_one_missed() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(50))
-            .with_missed_heartbeats_threshold(3);
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO);
 
         let (monitor, mut receiver) = HeartbeatMonitor::new(config);
         monitor.start_monitoring().await;
@@ -314,7 +338,8 @@ mod tests {
     async fn test_stall_detected_after_threshold_missed() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(50))
-            .with_missed_heartbeats_threshold(3);
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO);
 
         let (monitor, mut receiver) = HeartbeatMonitor::new(config);
         monitor.start_monitoring().await;
@@ -414,19 +439,22 @@ mod tests {
     async fn test_config_accessor() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_secs(5))
-            .with_missed_heartbeats_threshold(10);
+            .with_missed_heartbeats_threshold(10)
+            .with_startup_grace_period(Duration::from_secs(60));
 
         let (monitor, _receiver) = HeartbeatMonitor::new(config);
 
         assert_eq!(monitor.config().heartbeat_interval, Duration::from_secs(5));
         assert_eq!(monitor.config().missed_heartbeats_threshold, 10);
+        assert_eq!(monitor.config().startup_grace_period, Duration::from_secs(60));
     }
 
     #[tokio::test]
     async fn test_pulse_resets_missed_count() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(50))
-            .with_missed_heartbeats_threshold(3);
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO);
 
         let (monitor, mut receiver) = HeartbeatMonitor::new(config);
         monitor.start_monitoring().await;
@@ -454,7 +482,8 @@ mod tests {
     async fn test_warning_before_stall() {
         let config = TimeoutConfig::new()
             .with_heartbeat_interval(Duration::from_millis(30))
-            .with_missed_heartbeats_threshold(3);
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::ZERO);
 
         let (monitor, mut receiver) = HeartbeatMonitor::new(config);
         monitor.start_monitoring().await;
@@ -494,5 +523,72 @@ mod tests {
         let (monitor, _receiver) = HeartbeatMonitor::new(config);
 
         assert!(!monitor.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn test_grace_period_delays_monitoring() {
+        // Configure a short grace period for testing
+        let config = TimeoutConfig::new()
+            .with_heartbeat_interval(Duration::from_millis(30))
+            .with_missed_heartbeats_threshold(2)
+            .with_startup_grace_period(Duration::from_millis(100));
+
+        let (monitor, mut receiver) = HeartbeatMonitor::new(config);
+        monitor.start_monitoring().await;
+
+        // Wait for less than the grace period
+        // (no heartbeat checks should happen yet)
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // No events should be sent during grace period
+        let event = receiver.try_recv();
+        assert!(event.is_err(), "Should not receive events during grace period");
+
+        // Wait for grace period to complete plus some heartbeat intervals
+        // Grace period: 100ms, then heartbeat checks at 30ms intervals
+        // After grace period, need 2 missed heartbeats (60ms) to trigger stall
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        monitor.stop().await;
+
+        // Now we should have received stall detection
+        let mut events = Vec::new();
+        while let Ok(event) = tokio::time::timeout(Duration::from_millis(50), receiver.recv()).await
+        {
+            if let Some(e) = event {
+                events.push(e);
+            } else {
+                break;
+            }
+        }
+
+        // Should have received a stall detection after grace period
+        assert!(
+            events.iter().any(|e| matches!(e, HeartbeatEvent::StallDetected(_))),
+            "Expected stall detection after grace period"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_during_grace_period() {
+        let config = TimeoutConfig::new()
+            .with_heartbeat_interval(Duration::from_millis(50))
+            .with_missed_heartbeats_threshold(3)
+            .with_startup_grace_period(Duration::from_millis(200));
+
+        let (monitor, mut receiver) = HeartbeatMonitor::new(config);
+        monitor.start_monitoring().await;
+
+        // Wait a bit then stop during grace period
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        monitor.stop().await;
+
+        // Give it a moment to fully stop
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!monitor.is_running().await);
+
+        // No events should have been sent
+        let event = receiver.try_recv();
+        assert!(event.is_err(), "Should not receive events when stopped during grace period");
     }
 }
