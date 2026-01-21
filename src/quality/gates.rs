@@ -1368,9 +1368,19 @@ impl QualityGateChecker {
                 if output.status.success() {
                     GateResult::pass("format", "All files are properly formatted")
                 } else {
-                    // cargo fmt --check outputs files that need formatting to stdout
-                    let details = Self::extract_format_errors(&stdout, &stderr);
-                    GateResult::fail("format", "Some files need formatting", Some(details), None)
+                    // Extract structured failure details from output
+                    let failures = Self::extract_format_errors(&stdout, &stderr);
+                    let details = Self::format_format_summary(&failures);
+                    GateResult::fail(
+                        "format",
+                        format!(
+                            "{} file{} need formatting",
+                            failures.len(),
+                            if failures.len() == 1 { "" } else { "s" }
+                        ),
+                        Some(details),
+                        Some(failures),
+                    )
                 }
             }
             Err(e) => GateResult::fail(
@@ -1382,42 +1392,92 @@ impl QualityGateChecker {
         }
     }
 
-    /// Extract relevant information from cargo fmt output.
-    fn extract_format_errors(stdout: &str, stderr: &str) -> String {
+    /// Maximum number of format failures to include in structured output.
+    const MAX_FORMAT_FAILURES: usize = 20;
+
+    /// Extract structured format errors from cargo fmt output.
+    ///
+    /// Parses `cargo fmt --check` output to extract file paths from "Diff in" lines
+    /// and creates structured failure details for each unformatted file.
+    ///
+    /// # Arguments
+    ///
+    /// * `stdout` - Standard output from cargo fmt --check
+    /// * `stderr` - Standard error from cargo fmt --check
+    ///
+    /// # Returns
+    ///
+    /// A vector of `GateFailureDetail` entries, one for each file needing formatting.
+    fn extract_format_errors(stdout: &str, stderr: &str) -> Vec<GateFailureDetail> {
+        let mut failures = Vec::new();
+
         // cargo fmt --check outputs "Diff in <file>" for each unformatted file
-        let mut result = String::new();
+        // Example: "Diff in /path/to/file.rs at line 1:"
+        for line in stdout.lines() {
+            if line.starts_with("Diff in") {
+                // Extract file path from "Diff in /path/to/file.rs at line N:"
+                // or "Diff in /path/to/file.rs:"
+                let path = line
+                    .trim_start_matches("Diff in ")
+                    .split(" at line ")
+                    .next()
+                    .unwrap_or("")
+                    .trim_end_matches(':')
+                    .to_string();
 
-        // Count files needing formatting
-        let unformatted_files: Vec<&str> = stdout
-            .lines()
-            .filter(|line| line.starts_with("Diff in"))
-            .collect();
+                if !path.is_empty() {
+                    let failure = GateFailureDetail::new(
+                        FailureCategory::Format,
+                        format!("File needs formatting: {}", path),
+                    )
+                    .with_file(path)
+                    .with_suggestion("Run cargo fmt to fix".to_string());
 
-        if !unformatted_files.is_empty() {
-            result.push_str(&format!(
-                "{} file(s) need formatting:\n",
-                unformatted_files.len()
-            ));
-            for file in unformatted_files.iter().take(20) {
-                result.push_str(file);
-                result.push('\n');
+                    failures.push(failure);
+
+                    if failures.len() >= Self::MAX_FORMAT_FAILURES {
+                        break;
+                    }
+                }
             }
-            if unformatted_files.len() > 20 {
-                result.push_str(&format!(
-                    "... and {} more files\n",
-                    unformatted_files.len() - 20
-                ));
-            }
-            result.push_str("\nRun `cargo fmt` to fix formatting issues.");
-        } else if !stderr.is_empty() {
-            result = stderr.to_string();
-        } else if !stdout.is_empty() {
-            result = stdout.to_string();
-        } else {
-            result = "Formatting check failed (no additional details)".to_string();
         }
 
-        result
+        // If no structured failures found but stderr has content, create a generic failure
+        if failures.is_empty() && !stderr.is_empty() {
+            failures.push(
+                GateFailureDetail::new(FailureCategory::Format, stderr.to_string())
+                    .with_suggestion("Run cargo fmt to fix".to_string()),
+            );
+        }
+
+        failures
+    }
+
+    /// Format a summary of format failures for the details field.
+    fn format_format_summary(failures: &[GateFailureDetail]) -> String {
+        if failures.is_empty() {
+            return "Formatting check failed (no additional details)".to_string();
+        }
+
+        let mut summary = format!("{} file(s) need formatting:\n", failures.len());
+
+        for (i, failure) in failures.iter().enumerate().take(Self::MAX_FORMAT_FAILURES) {
+            if let Some(ref file) = failure.file {
+                summary.push_str(&format!("{}. {}\n", i + 1, file));
+            } else {
+                summary.push_str(&format!("{}. {}\n", i + 1, failure.message));
+            }
+        }
+
+        if failures.len() > Self::MAX_FORMAT_FAILURES {
+            summary.push_str(&format!(
+                "... and {} more files\n",
+                failures.len() - Self::MAX_FORMAT_FAILURES
+            ));
+        }
+
+        summary.push_str("\nRun `cargo fmt` to fix formatting issues.");
+        summary
     }
 
     /// Check for security vulnerabilities using cargo-audit.
@@ -2249,26 +2309,114 @@ warning: function `foo` is never used
     fn test_extract_format_errors_with_diffs() {
         let stdout = "Diff in /src/main.rs at line 1:\nDiff in /src/lib.rs at line 5:\n";
         let stderr = "";
-        let result = QualityGateChecker::extract_format_errors(stdout, stderr);
+        let failures = QualityGateChecker::extract_format_errors(stdout, stderr);
 
-        assert!(result.contains("2 file(s) need formatting"));
-        assert!(result.contains("cargo fmt"));
+        assert_eq!(failures.len(), 2);
+
+        // Check first failure
+        assert_eq!(failures[0].category, FailureCategory::Format);
+        assert_eq!(failures[0].file, Some("/src/main.rs".to_string()));
+        assert_eq!(
+            failures[0].suggestion,
+            Some("Run cargo fmt to fix".to_string())
+        );
+
+        // Check second failure
+        assert_eq!(failures[1].category, FailureCategory::Format);
+        assert_eq!(failures[1].file, Some("/src/lib.rs".to_string()));
+        assert_eq!(
+            failures[1].suggestion,
+            Some("Run cargo fmt to fix".to_string())
+        );
+
+        // Verify summary formatting
+        let summary = QualityGateChecker::format_format_summary(&failures);
+        assert!(summary.contains("2 file(s) need formatting"));
+        assert!(summary.contains("cargo fmt"));
     }
 
     #[test]
     fn test_extract_format_errors_empty() {
         let stdout = "";
         let stderr = "";
-        let result = QualityGateChecker::extract_format_errors(stdout, stderr);
-        assert!(result.contains("Formatting check failed"));
+        let failures = QualityGateChecker::extract_format_errors(stdout, stderr);
+        assert!(failures.is_empty());
+
+        // Verify summary handles empty case
+        let summary = QualityGateChecker::format_format_summary(&failures);
+        assert!(summary.contains("Formatting check failed"));
     }
 
     #[test]
     fn test_extract_format_errors_with_stderr() {
         let stdout = "";
         let stderr = "error: couldn't parse file";
-        let result = QualityGateChecker::extract_format_errors(stdout, stderr);
-        assert!(result.contains("couldn't parse"));
+        let failures = QualityGateChecker::extract_format_errors(stdout, stderr);
+
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].category, FailureCategory::Format);
+        assert!(failures[0].message.contains("couldn't parse"));
+        assert_eq!(
+            failures[0].suggestion,
+            Some("Run cargo fmt to fix".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_format_errors_sample_rustfmt_output() {
+        // Sample rustfmt output with typical format
+        let stdout = r#"Diff in src/main.rs at line 10:
+Diff in src/lib.rs at line 25:
+Diff in src/utils/helpers.rs at line 1:
+"#;
+        let stderr = "";
+        let failures = QualityGateChecker::extract_format_errors(stdout, stderr);
+
+        assert_eq!(failures.len(), 3);
+
+        // Verify all failures have correct structure
+        for failure in &failures {
+            assert_eq!(failure.category, FailureCategory::Format);
+            assert!(failure.file.is_some());
+            assert_eq!(failure.suggestion, Some("Run cargo fmt to fix".to_string()));
+            assert!(failure.message.starts_with("File needs formatting:"));
+        }
+
+        // Verify specific file paths extracted correctly
+        assert_eq!(failures[0].file, Some("src/main.rs".to_string()));
+        assert_eq!(failures[1].file, Some("src/lib.rs".to_string()));
+        assert_eq!(failures[2].file, Some("src/utils/helpers.rs".to_string()));
+
+        // Verify summary formatting
+        let summary = QualityGateChecker::format_format_summary(&failures);
+        assert!(summary.contains("3 file(s) need formatting"));
+        assert!(summary.contains("src/main.rs"));
+        assert!(summary.contains("src/lib.rs"));
+        assert!(summary.contains("src/utils/helpers.rs"));
+        assert!(summary.contains("cargo fmt"));
+    }
+
+    #[test]
+    fn test_format_format_summary() {
+        let failures = vec![
+            GateFailureDetail::new(
+                FailureCategory::Format,
+                "File needs formatting: src/main.rs".to_string(),
+            )
+            .with_file("src/main.rs".to_string()),
+            GateFailureDetail::new(
+                FailureCategory::Format,
+                "File needs formatting: src/lib.rs".to_string(),
+            )
+            .with_file("src/lib.rs".to_string()),
+        ];
+
+        let summary = QualityGateChecker::format_format_summary(&failures);
+
+        assert!(summary.contains("2 file(s) need formatting"));
+        assert!(summary.contains("1. src/main.rs"));
+        assert!(summary.contains("2. src/lib.rs"));
+        assert!(summary.contains("cargo fmt"));
     }
 
     // Security audit gate tests

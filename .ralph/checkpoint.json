@@ -1,31 +1,15 @@
 {
   "version": 1,
-  "created_at": "2026-01-21T06:26:44.557114Z",
+  "created_at": "2026-01-21T06:31:45.586981Z",
   "current_story": {
-    "story_id": "US-008",
+    "story_id": "US-009",
     "iteration": 1,
     "max_iterations": 10
   },
   "pause_reason": "iteration_boundary",
   "uncommitted_files": [
     "ralph/checkpoint.json",
-    "ralph/evidence/runs/run-1768973367003-85330/events.jsonl",
-    "ralph/evidence/runs/run-1768973367003-85330/run.json",
-    "rc/main.rs",
-    "rc/mcp/tools/executor.rs",
-    "rc/quality/gates.rs",
-    "rc/timeout/heartbeat.rs",
-    "rc/timeout/mod.rs",
-    "ests/error_recovery_tests.rs",
-    ".ralph/evidence/runs/run-1768974558659-38859/",
-    ".ralph/evidence/runs/run-1768975033253-55499/",
-    ".ralph/evidence/runs/run-1768975496492-69494/",
-    ".ralph/evidence/runs/run-1768976790249-741/",
-    ".ralph/evidence/runs/run-1768976804491-2323/",
-    ".ralph/runs/run-1768973367003-85330.json",
-    ".ralph/runs/run-1768974558659-38859.json",
-    ".ralph/runs/run-1768975033253-55499.json",
-    ".ralph/runs/run-1768975496492-69494.json",
-    "tasks/prd-heartbeat-stall-tuning.md"
+    "ralph/evidence/runs/run-1768976804491-2323/events.jsonl",
+    "ralph/evidence/runs/run-1768976804491-2323/run.json"
   ]
 }

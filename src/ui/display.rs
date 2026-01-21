@@ -8,6 +8,54 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Callback trait for receiving agent output in real-time.
+///
+/// Implement this trait to receive streaming output from the agent executor.
+/// The callback is invoked for each line of stdout/stderr from the agent process.
+///
+/// # Thread Safety
+///
+/// Implementations must be `Send + Sync` as the callback may be invoked from
+/// async contexts across different threads.
+///
+/// # Example
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use ralphmacchio::ui::DisplayCallback;
+///
+/// struct MyDisplay;
+///
+/// impl DisplayCallback for MyDisplay {
+///     fn on_agent_output(&self, line: &str, is_stderr: bool) {
+///         if is_stderr {
+///             eprintln!("[agent stderr] {}", line);
+///         } else {
+///             println!("[agent stdout] {}", line);
+///         }
+///     }
+/// }
+/// ```
+pub trait DisplayCallback: Send + Sync {
+    /// Called when a line of output is received from the agent.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - The line of text from the agent (without trailing newline)
+    /// * `is_stderr` - True if this line came from stderr, false for stdout
+    fn on_agent_output(&self, line: &str, is_stderr: bool);
+
+    /// Called when agent execution starts for a story.
+    ///
+    /// Default implementation does nothing.
+    fn on_agent_started(&self, _story_id: &str, _iteration: u32) {}
+
+    /// Called when agent execution completes.
+    ///
+    /// Default implementation does nothing.
+    fn on_agent_completed(&self, _story_id: &str, _success: bool) {}
+}
+
 use crate::mcp::server::ExecutionState;
 use crate::quality::gates::GateResult;
 use crate::ui::colors::Theme;
