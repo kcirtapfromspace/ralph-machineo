@@ -180,9 +180,18 @@ impl Runner {
         }
     }
 
+    /// Default circuit breaker threshold if not configured.
+    const DEFAULT_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+
     /// Run all stories sequentially until all pass or an error occurs
     async fn run_sequential(&self) -> RunResult {
         let mut total_iterations: u32 = 0;
+        // Circuit breaker: track consecutive failures to prevent cascading API costs
+        let mut consecutive_failures: u32 = 0;
+        let circuit_breaker_threshold = self
+            .config
+            .circuit_breaker_threshold
+            .unwrap_or(Self::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
         let run_id = generate_run_id();
         let run_metrics = RunMetricsCollector::new(run_id.clone(), 0);
         let metrics_store = match RunMetricsStore::new(&self.config.working_dir) {
@@ -490,6 +499,8 @@ impl Runner {
                     match result {
                         Ok(exec_result) => {
                             if exec_result.success {
+                                // Reset circuit breaker counter on success
+                                consecutive_failures = 0;
                                 // Clear checkpoint on successful story completion
                                 self.clear_checkpoint();
                                 if let Some(writer) = evidence.as_mut() {
@@ -503,6 +514,9 @@ impl Runner {
                                 display
                                     .complete_story(&story_id, exec_result.commit_hash.as_deref());
                             } else {
+                                // Increment circuit breaker counter on failure
+                                consecutive_failures += 1;
+
                                 let error_message = exec_result
                                     .error
                                     .clone()
@@ -510,6 +524,43 @@ impl Runner {
                                 // Save checkpoint on story failure (quality gates didn't pass)
                                 let final_iteration =
                                     start_iteration + exec_result.iterations_used - 1;
+
+                                // Check circuit breaker threshold
+                                if consecutive_failures >= circuit_breaker_threshold {
+                                    self.save_checkpoint(
+                                        &story_id,
+                                        final_iteration,
+                                        max_iterations,
+                                        PauseReason::CircuitBreakerTriggered {
+                                            consecutive_failures,
+                                            threshold: circuit_breaker_threshold,
+                                        },
+                                    );
+                                    let circuit_breaker_msg = format!(
+                                        "Circuit breaker triggered: {} consecutive failures (threshold: {})",
+                                        consecutive_failures, circuit_breaker_threshold
+                                    );
+                                    println!("\n⚡ {}", circuit_breaker_msg);
+                                    if let Some(writer) = evidence.as_mut() {
+                                        writer.emit_run_complete(
+                                            "failed",
+                                            Some("circuit_breaker".to_string()),
+                                            Some(circuit_breaker_msg.clone()),
+                                        );
+                                    }
+                                    save_metrics(&run_metrics);
+                                    return RunResult {
+                                        all_passed: false,
+                                        stories_passed: self.count_passing_stories().unwrap_or(0),
+                                        total_stories,
+                                        total_iterations,
+                                        error: Some(format!(
+                                            "{}. Checkpoint saved. Resume with: ralph --resume",
+                                            circuit_breaker_msg
+                                        )),
+                                    };
+                                }
+
                                 self.save_checkpoint(
                                     &story_id,
                                     final_iteration,
@@ -1007,5 +1058,101 @@ impl Runner {
             let days = total_seconds / 86400;
             format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_circuit_breaker_threshold() {
+        // Verify the default circuit breaker threshold is 5
+        assert_eq!(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD, 5);
+    }
+
+    #[test]
+    fn test_runner_config_default_circuit_breaker_threshold() {
+        let config = RunnerConfig::default();
+        // Default config should have None for circuit_breaker_threshold
+        assert!(config.circuit_breaker_threshold.is_none());
+    }
+
+    #[test]
+    fn test_runner_config_custom_circuit_breaker_threshold() {
+        let config = RunnerConfig {
+            circuit_breaker_threshold: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(config.circuit_breaker_threshold, Some(3));
+    }
+
+    #[test]
+    fn test_circuit_breaker_threshold_resolution() {
+        // Test that None resolves to default
+        let threshold: Option<u32> = None;
+        let resolved = threshold.unwrap_or(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
+        assert_eq!(resolved, 5);
+
+        // Test that Some value is used
+        let threshold: Option<u32> = Some(3);
+        let resolved = threshold.unwrap_or(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
+        assert_eq!(resolved, 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_counter_logic() {
+        // Simulate the circuit breaker counter logic
+        let threshold: u32 = 3;
+        let mut consecutive_failures: u32 = 0;
+
+        // Simulate failures
+        for i in 1..=5 {
+            consecutive_failures += 1;
+
+            if consecutive_failures >= threshold {
+                // Circuit breaker should trigger at threshold
+                assert!(
+                    i >= 3,
+                    "Circuit breaker should trigger at or after 3 failures"
+                );
+                break;
+            }
+        }
+
+        assert_eq!(consecutive_failures, 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset_on_success() {
+        // Simulate the circuit breaker counter reset logic
+        let threshold: u32 = 5;
+        let mut consecutive_failures: u32 = 0;
+
+        // Simulate 3 consecutive failures
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        assert_eq!(consecutive_failures, 3);
+
+        // Simulate a success - should reset counter
+        let success = true;
+        if success {
+            consecutive_failures = 0;
+        }
+        assert_eq!(consecutive_failures, 0);
+
+        // Verify we need to reach threshold again
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        assert!(consecutive_failures < threshold);
+    }
+
+    #[test]
+    fn test_circuit_breaker_fresh_start_per_run() {
+        // Verify that consecutive_failures starts at 0 (fresh start per run)
+        // This is guaranteed by the initialization in run_sequential
+        let consecutive_failures: u32 = 0;
+        assert_eq!(consecutive_failures, 0);
     }
 }

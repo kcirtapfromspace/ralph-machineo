@@ -1,0 +1,117 @@
+{
+  "run_id": "run-1768980450418-77124",
+  "started_at": {
+    "secs_since_epoch": 1768980450,
+    "nanos_since_epoch": 418690000
+  },
+  "completed_at": {
+    "secs_since_epoch": 1768981471,
+    "nanos_since_epoch": 309185000
+  },
+  "recorded_at": {
+    "secs_since_epoch": 1768981471,
+    "nanos_since_epoch": 309185000
+  },
+  "run_duration": {
+    "secs": 1020,
+    "nanos": 890652250
+  },
+  "expected_steps": 6,
+  "steps_attempted": 4,
+  "steps_completed": 3,
+  "failures": 1,
+  "retries": 0,
+  "completeness_percent": 66.66666666666666,
+  "step_durations": {
+    "US-013": {
+      "secs": 345,
+      "nanos": 74982000
+    },
+    "US-011": {
+      "secs": 165,
+      "nanos": 266522833
+    },
+    "US-012": {
+      "secs": 255,
+      "nanos": 267323250
+    },
+    "US-010": {
+      "secs": 255,
+      "nanos": 228938000
+    }
+  },
+  "steps": [
+    {
+      "step_id": "US-011",
+      "attempts": 1,
+      "duration": {
+        "secs": 165,
+        "nanos": 266522833
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768980705,
+        "nanos_since_epoch": 669508000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768980870,
+        "nanos_since_epoch": 935965000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-012",
+      "attempts": 1,
+      "duration": {
+        "secs": 255,
+        "nanos": 267323250
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768980870,
+        "nanos_since_epoch": 936106000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768981126,
+        "nanos_since_epoch": 203325000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-013",
+      "attempts": 1,
+      "duration": {
+        "secs": 345,
+        "nanos": 74982000
+      },
+      "success": false,
+      "started_at": {
+        "secs_since_epoch": 1768981126,
+        "nanos_since_epoch": 203454000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768981471,
+        "nanos_since_epoch": 278555000
+      },
+      "error": "Execution timed out: Agent 'claude' stalled (no output for 180s) (iteration 1)"
+    },
+    {
+      "step_id": "US-010",
+      "attempts": 1,
+      "duration": {
+        "secs": 255,
+        "nanos": 228938000
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768980450,
+        "nanos_since_epoch": 440547000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768980705,
+        "nanos_since_epoch": 669386000
+      },
+      "error": null
+    }
+  ]
+}
