@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::budget::{BudgetAwarePromptBuilder, PromptStrategy};
+
 /// Error information from a single iteration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IterationError {
@@ -421,6 +423,59 @@ impl IterationContext {
 
         context
     }
+
+    /// Build a budget-aware context string to inject into agent prompts.
+    ///
+    /// This version uses the provided `PromptStrategy` to limit context size
+    /// when token budget is constrained. The strategy determines how much
+    /// error history, hints, and progress information to include.
+    pub fn build_prompt_context_with_strategy(&self, strategy: PromptStrategy) -> String {
+        if self.error_history.is_empty() {
+            return String::new();
+        }
+
+        let builder = BudgetAwarePromptBuilder::new(strategy);
+        let mut context = String::from("\n## Previous Iteration Context\n\n");
+
+        // Add error history (limited by strategy)
+        context.push_str(&builder.build_error_history(&self.error_history));
+
+        // Add hints if strategy allows
+        context.push_str(&builder.build_hints(&self.approach_hints));
+
+        // Add partial progress if strategy allows
+        context.push_str(&builder.build_partial_progress(&self.partial_progress));
+
+        // Add steering guidance if provided (always include - user-provided)
+        if let Some(ref guidance) = self.steering_guidance {
+            context.push_str(&guidance.build_prompt_section());
+        }
+
+        // Add iteration note
+        context.push_str(&format!(
+            "\n**Note**: This is iteration {} of {}. Please address the issues above.\n",
+            self.current_iteration, self.max_iterations
+        ));
+
+        // Add budget warning if in minimal or critical mode
+        match strategy {
+            PromptStrategy::Critical => {
+                context.push_str(
+                    "\n**BUDGET WARNING**: Token budget is critically low. \
+                    Focus on the most essential fix only.\n"
+                );
+            }
+            PromptStrategy::Minimal => {
+                context.push_str(
+                    "\n**Budget Notice**: Token budget is constrained. \
+                    Keep changes minimal and focused.\n"
+                );
+            }
+            _ => {}
+        }
+
+        context
+    }
 }
 
 #[cfg(test)]
@@ -596,5 +651,62 @@ mod tests {
         assert!(prompt.contains("Suggested Approaches"));
         assert!(prompt.contains("Fix imports first"));
         assert!(prompt.contains("80%"));
+    }
+
+    #[test]
+    fn test_build_prompt_context_with_strategy_minimal() {
+        let mut ctx = IterationContext::new("US-001", 10);
+        ctx.start_iteration(4);
+
+        // Add more errors than Minimal strategy allows (2)
+        ctx.record_error(IterationError::new(1, ErrorCategory::Lint, "Error 1"));
+        ctx.record_error(IterationError::new(2, ErrorCategory::Lint, "Error 2"));
+        ctx.record_error(IterationError::new(3, ErrorCategory::Lint, "Error 3"));
+
+        // Add hints (Minimal strategy doesn't include hints)
+        let mut hint = ApproachHint::new("Try this approach");
+        hint.success_rate = 0.9;
+        ctx.add_hint(hint);
+
+        let prompt = ctx.build_prompt_context_with_strategy(PromptStrategy::Minimal);
+
+        // Should include budget notice
+        assert!(prompt.contains("Budget Notice"));
+        // Should limit errors (only most recent 2)
+        assert!(prompt.contains("Iteration 3"));
+        assert!(prompt.contains("Iteration 2"));
+        // Should NOT include hints in Minimal mode
+        assert!(!prompt.contains("Suggested Approaches"));
+    }
+
+    #[test]
+    fn test_build_prompt_context_with_strategy_critical() {
+        let mut ctx = IterationContext::new("US-001", 10);
+        ctx.start_iteration(2);
+        ctx.record_error(IterationError::new(1, ErrorCategory::Compilation, "Compile error"));
+
+        let prompt = ctx.build_prompt_context_with_strategy(PromptStrategy::Critical);
+
+        // Should include critical budget warning
+        assert!(prompt.contains("BUDGET WARNING"));
+        assert!(prompt.contains("critically low"));
+    }
+
+    #[test]
+    fn test_build_prompt_context_with_strategy_standard() {
+        let mut ctx = IterationContext::new("US-001", 10);
+        ctx.start_iteration(2);
+        ctx.record_error(IterationError::new(1, ErrorCategory::Lint, "Error 1"));
+
+        let mut hint = ApproachHint::new("Try this approach");
+        hint.success_rate = 0.9;
+        ctx.add_hint(hint);
+
+        let prompt = ctx.build_prompt_context_with_strategy(PromptStrategy::Standard);
+
+        // Standard mode includes hints
+        assert!(prompt.contains("Suggested Approaches"));
+        // No budget warning in Standard mode
+        assert!(!prompt.contains("Budget"));
     }
 }

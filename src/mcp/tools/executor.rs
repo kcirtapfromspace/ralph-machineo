@@ -802,7 +802,9 @@ impl StoryExecutor {
         context: &IterationContext,
     ) -> String {
         let base_prompt = self.build_agent_prompt(story, prd);
-        let context_section = context.build_prompt_context();
+        // Use budget-aware context building if budget is enabled
+        let prompt_strategy = self.get_prompt_strategy();
+        let context_section = context.build_prompt_context_with_strategy(prompt_strategy);
         format!("{}{}", base_prompt, context_section)
     }
 

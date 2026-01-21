@@ -42,5 +42,5 @@ mod tracker;
 pub use config::{TokenBudgetConfig, TokenCost};
 pub use estimator::TokenEstimator;
 pub use parser::{extract_or_estimate, ParsedTokenUsage, TokenUsageParser};
-pub use strategy::{BudgetStrategy, PromptStrategy};
+pub use strategy::{BudgetAwarePromptBuilder, BudgetStrategy, PromptStrategy};
 pub use tracker::{BudgetEnforcement, BudgetStatus, SharedTokenBudget, StoryBudget, TokenBudget};
