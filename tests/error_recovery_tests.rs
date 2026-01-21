@@ -563,8 +563,9 @@ fn test_timeout_config_defaults() {
 
     assert_eq!(config.agent_timeout, Duration::from_secs(600));
     assert_eq!(config.iteration_timeout, Duration::from_secs(900));
-    assert_eq!(config.heartbeat_interval, Duration::from_secs(30));
-    assert_eq!(config.missed_heartbeats_threshold, 3);
+    assert_eq!(config.heartbeat_interval, Duration::from_secs(45));
+    assert_eq!(config.missed_heartbeats_threshold, 4);
+    assert_eq!(config.startup_grace_period, Duration::from_secs(120));
 }
 
 #[test]
@@ -573,19 +574,22 @@ fn test_timeout_config_builder() {
         .with_agent_timeout(Duration::from_secs(300))
         .with_iteration_timeout(Duration::from_secs(600))
         .with_heartbeat_interval(Duration::from_secs(15))
-        .with_missed_heartbeats_threshold(5);
+        .with_missed_heartbeats_threshold(5)
+        .with_startup_grace_period(Duration::from_secs(90));
 
     assert_eq!(config.agent_timeout, Duration::from_secs(300));
     assert_eq!(config.iteration_timeout, Duration::from_secs(600));
     assert_eq!(config.heartbeat_interval, Duration::from_secs(15));
     assert_eq!(config.missed_heartbeats_threshold, 5);
+    assert_eq!(config.startup_grace_period, Duration::from_secs(90));
 }
 
 #[tokio::test]
 async fn test_heartbeat_monitor_no_events_with_pulses() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, mut receiver) = HeartbeatMonitor::new(config);
     monitor.start_monitoring().await;
@@ -610,7 +614,8 @@ async fn test_heartbeat_monitor_no_events_with_pulses() {
 async fn test_heartbeat_monitor_warning_on_missed_beats() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, mut receiver) = HeartbeatMonitor::new(config);
     monitor.start_monitoring().await;
@@ -635,7 +640,8 @@ async fn test_heartbeat_monitor_warning_on_missed_beats() {
 async fn test_heartbeat_monitor_stall_detection() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, mut receiver) = HeartbeatMonitor::new(config);
     monitor.start_monitoring().await;
@@ -667,7 +673,8 @@ async fn test_heartbeat_monitor_stall_detection() {
 async fn test_heartbeat_monitor_start_stop() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, _receiver) = HeartbeatMonitor::new(config);
 
@@ -685,7 +692,8 @@ async fn test_heartbeat_monitor_start_stop() {
 async fn test_heartbeat_monitor_restart() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, _receiver) = HeartbeatMonitor::new(config);
 
@@ -706,7 +714,8 @@ async fn test_heartbeat_monitor_restart() {
 async fn test_heartbeat_pulse_resets_timer() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(50))
-        .with_missed_heartbeats_threshold(3);
+        .with_missed_heartbeats_threshold(3)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, mut receiver) = HeartbeatMonitor::new(config);
     monitor.start_monitoring().await;
@@ -792,7 +801,8 @@ fn test_error_recovery_flow_retry_decision() {
 async fn test_error_recovery_flow_pause_on_stall() {
     let config = TimeoutConfig::new()
         .with_heartbeat_interval(Duration::from_millis(30))
-        .with_missed_heartbeats_threshold(2);
+        .with_missed_heartbeats_threshold(2)
+        .with_startup_grace_period(Duration::ZERO);
 
     let (monitor, mut receiver) = HeartbeatMonitor::new(config);
     let pause_controller = PauseController::new();
