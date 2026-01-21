@@ -1,0 +1,95 @@
+{
+  "run_id": "run-1768976804491-2323",
+  "started_at": {
+    "secs_since_epoch": 1768976804,
+    "nanos_since_epoch": 491944000
+  },
+  "completed_at": {
+    "secs_since_epoch": 1768977750,
+    "nanos_since_epoch": 915902000
+  },
+  "recorded_at": {
+    "secs_since_epoch": 1768977750,
+    "nanos_since_epoch": 915902000
+  },
+  "run_duration": {
+    "secs": 946,
+    "nanos": 424562500
+  },
+  "expected_steps": 8,
+  "steps_attempted": 3,
+  "steps_completed": 2,
+  "failures": 1,
+  "retries": 0,
+  "completeness_percent": 37.5,
+  "step_durations": {
+    "US-009": {
+      "secs": 300,
+      "nanos": 234362500
+    },
+    "US-008": {
+      "secs": 301,
+      "nanos": 36177583
+    },
+    "US-010": {
+      "secs": 345,
+      "nanos": 73383292
+    }
+  },
+  "steps": [
+    {
+      "step_id": "US-008",
+      "attempts": 1,
+      "duration": {
+        "secs": 301,
+        "nanos": 36177583
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768976804,
+        "nanos_since_epoch": 540788000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768977105,
+        "nanos_since_epoch": 576800000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-009",
+      "attempts": 1,
+      "duration": {
+        "secs": 300,
+        "nanos": 234362500
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768977105,
+        "nanos_since_epoch": 576931000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768977405,
+        "nanos_since_epoch": 811128000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-010",
+      "attempts": 1,
+      "duration": {
+        "secs": 345,
+        "nanos": 73383292
+      },
+      "success": false,
+      "started_at": {
+        "secs_since_epoch": 1768977405,
+        "nanos_since_epoch": 811251000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768977750,
+        "nanos_since_epoch": 884366000
+      },
+      "error": "Execution timed out: Agent 'claude' stalled (no output for 180s) (iteration 1)"
+    }
+  ]
+}

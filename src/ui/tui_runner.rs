@@ -135,7 +135,10 @@ impl TuiRunnerDisplay {
 
     /// Get elapsed time since iteration started.
     pub fn get_iteration_elapsed(&self) -> Option<Duration> {
-        self.iteration_start.lock().ok()?.map(|start| start.elapsed())
+        self.iteration_start
+            .lock()
+            .ok()?
+            .map(|start| start.elapsed())
     }
 
     /// Redraw the iteration status line after streaming output.
@@ -305,13 +308,21 @@ impl TuiRunnerDisplay {
             String::new()
         };
 
-        print!("  {}{}", iter_widget.render_string(), self.style_dim(&elapsed_str));
+        print!(
+            "  {}{}",
+            iter_widget.render_string(),
+            self.style_dim(&elapsed_str)
+        );
 
         // Render last activity indicator on a new line if available
         if let Some(activity) = self.get_last_activity() {
             let time_ago = activity.timestamp.elapsed();
             let time_str = if time_ago.as_secs() >= 60 {
-                format!("{}m {}s ago", time_ago.as_secs() / 60, time_ago.as_secs() % 60)
+                format!(
+                    "{}m {}s ago",
+                    time_ago.as_secs() / 60,
+                    time_ago.as_secs() % 60
+                )
             } else {
                 format!("{}s ago", time_ago.as_secs())
             };
@@ -319,7 +330,10 @@ impl TuiRunnerDisplay {
             // Truncate activity description to fit terminal width
             let max_desc_len = self.term_width.saturating_sub(20); // Leave room for prefix and time
             let desc = if activity.description.len() > max_desc_len {
-                format!("{}...", &activity.description[..max_desc_len.saturating_sub(3)])
+                format!(
+                    "{}...",
+                    &activity.description[..max_desc_len.saturating_sub(3)]
+                )
             } else {
                 activity.description.clone()
             };
@@ -659,7 +673,7 @@ impl DisplayCallback for TuiRunnerDisplay {
         if self.should_show_streaming() {
             // Clear current line and print output with prefix
             print!("\r\x1b[K"); // Clear line
-            // Use dim prefix for both stdout/stderr; could differentiate later
+                                // Use dim prefix for both stdout/stderr; could differentiate later
             let _ = is_stderr; // Reserved for future stderr styling
             let prefix = self.style_dim("  │ ");
             println!("{}{}", prefix, line);
