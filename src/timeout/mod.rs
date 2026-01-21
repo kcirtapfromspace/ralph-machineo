@@ -51,8 +51,8 @@ impl Default for TimeoutConfig {
         Self {
             agent_timeout: Duration::from_secs(600),
             iteration_timeout: Duration::from_secs(900),
-            heartbeat_interval: Duration::from_secs(45),
-            missed_heartbeats_threshold: 4,
+            heartbeat_interval: Duration::from_secs(60),
+            missed_heartbeats_threshold: 5,
             startup_grace_period: Duration::from_secs(120),
             git_timeout: Duration::from_secs(60),
         }
@@ -144,13 +144,13 @@ mod tests {
     #[test]
     fn test_default_heartbeat_interval() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.heartbeat_interval, Duration::from_secs(45));
+        assert_eq!(config.heartbeat_interval, Duration::from_secs(60));
     }
 
     #[test]
     fn test_default_missed_heartbeats_threshold() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.missed_heartbeats_threshold, 4);
+        assert_eq!(config.missed_heartbeats_threshold, 5);
     }
 
     #[test]

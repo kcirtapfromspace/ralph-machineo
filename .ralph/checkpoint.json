@@ -1,21 +1,31 @@
 {
   "version": 1,
-  "created_at": "2026-01-21T05:29:29.187727Z",
+  "created_at": "2026-01-21T06:26:44.557114Z",
   "current_story": {
-    "story_id": "US-007",
+    "story_id": "US-008",
     "iteration": 1,
     "max_iterations": 10
   },
   "pause_reason": "iteration_boundary",
   "uncommitted_files": [
     "ralph/checkpoint.json",
-    "ralph/evidence/runs/run-1768970049349-97465/events.jsonl",
-    "ralph/evidence/runs/run-1768970049349-97465/run.json",
-    "rc/checkpoint/mod.rs",
+    "ralph/evidence/runs/run-1768973367003-85330/events.jsonl",
+    "ralph/evidence/runs/run-1768973367003-85330/run.json",
+    "rc/main.rs",
+    "rc/mcp/tools/executor.rs",
     "rc/quality/gates.rs",
-    "rc/runner.rs",
-    ".ralph/evidence/runs/run-1768971613460-24261/",
-    ".ralph/evidence/runs/run-1768973367003-85330/",
-    ".ralph/runs/run-1768970049349-97465.json"
+    "rc/timeout/heartbeat.rs",
+    "rc/timeout/mod.rs",
+    "ests/error_recovery_tests.rs",
+    ".ralph/evidence/runs/run-1768974558659-38859/",
+    ".ralph/evidence/runs/run-1768975033253-55499/",
+    ".ralph/evidence/runs/run-1768975496492-69494/",
+    ".ralph/evidence/runs/run-1768976790249-741/",
+    ".ralph/evidence/runs/run-1768976804491-2323/",
+    ".ralph/runs/run-1768973367003-85330.json",
+    ".ralph/runs/run-1768974558659-38859.json",
+    ".ralph/runs/run-1768975033253-55499.json",
+    ".ralph/runs/run-1768975496492-69494.json",
+    "tasks/prd-heartbeat-stall-tuning.md"
   ]
 }
