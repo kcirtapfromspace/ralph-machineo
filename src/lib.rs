@@ -4,6 +4,7 @@
 //! and potential use as a library.
 
 pub mod audit;
+pub mod budget;
 pub mod checkpoint;
 pub mod error;
 pub mod evidence;

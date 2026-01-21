@@ -16,6 +16,10 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{watch, Mutex};
 
+use crate::budget::{
+    extract_or_estimate, BudgetStrategy, ParsedTokenUsage, PromptStrategy, SharedTokenBudget,
+    TokenBudget, TokenBudgetConfig, TokenEstimator,
+};
 use crate::checkpoint::{Checkpoint, CheckpointManager, PauseReason, StoryCheckpoint};
 use crate::error::classification::{ErrorCategory, TimeoutReason};
 use crate::iteration::{
@@ -50,6 +54,12 @@ pub struct ExecutionResult {
     pub iteration_context: Option<IterationContext>,
     /// Whether user guidance is needed to continue
     pub needs_guidance: bool,
+    /// Token usage for this story (if budget tracking enabled)
+    pub tokens_used: Option<u64>,
+    /// Estimated cost for this story in cents (if budget tracking enabled)
+    pub estimated_cost_cents: Option<f64>,
+    /// Whether budget was exceeded
+    pub budget_exceeded: bool,
 }
 
 /// Error types for story execution
@@ -73,6 +83,8 @@ pub enum ExecutorError {
     IoError(String),
     /// Execution timed out
     Timeout(String),
+    /// Token budget exceeded
+    BudgetExceeded(String),
 }
 
 impl std::fmt::Display for ExecutorError {
@@ -87,11 +99,22 @@ impl std::fmt::Display for ExecutorError {
             ExecutorError::Cancelled => write!(f, "Execution was cancelled"),
             ExecutorError::IoError(msg) => write!(f, "IO error: {}", msg),
             ExecutorError::Timeout(msg) => write!(f, "Execution timed out: {}", msg),
+            ExecutorError::BudgetExceeded(msg) => write!(f, "Token budget exceeded: {}", msg),
         }
     }
 }
 
 impl std::error::Error for ExecutorError {}
+
+/// Result of running an agent, including token usage.
+struct AgentRunResult {
+    /// Files that were changed
+    files_changed: Vec<String>,
+    /// Parsed token usage (actual or estimated)
+    token_usage: ParsedTokenUsage,
+    /// Raw stdout output (for further analysis)
+    stdout: String,
+}
 
 impl ExecutorError {
     /// Classify this error into an ErrorCategory for recovery decisions.
@@ -108,6 +131,7 @@ impl ExecutorError {
             ExecutorError::QualityGateFailed(_) => ErrorCategory::Fatal(FatalReason::InternalError),
             ExecutorError::AgentError(_) => ErrorCategory::Transient(TransientReason::ServerError),
             ExecutorError::IoError(_) => ErrorCategory::Transient(TransientReason::NetworkError),
+            ExecutorError::BudgetExceeded(_) => ErrorCategory::Fatal(FatalReason::InternalError),
         }
     }
 }
@@ -137,6 +161,8 @@ pub struct ExecutorConfig {
     pub futility_config: FutilityConfig,
     /// Optional metrics collector for tracking execution statistics
     pub metrics_collector: Option<MetricsCollector>,
+    /// Token budget configuration for cost control
+    pub budget_config: Option<TokenBudgetConfig>,
 }
 
 impl Default for ExecutorConfig {
@@ -153,6 +179,7 @@ impl Default for ExecutorConfig {
             enable_futility_detection: true,
             futility_config: FutilityConfig::default(),
             metrics_collector: None,
+            budget_config: None, // Disabled by default for backwards compatibility
         }
     }
 }
@@ -163,6 +190,10 @@ pub struct StoryExecutor {
     checkpoint_manager: Option<CheckpointManager>,
     /// Optional callback for streaming agent output to the display
     display_callback: Option<Arc<dyn DisplayCallback>>,
+    /// Token budget tracker for cost control
+    token_budget: Option<TokenBudget>,
+    /// Token estimator for prompt/output estimation
+    token_estimator: TokenEstimator,
 }
 
 impl StoryExecutor {
@@ -170,10 +201,16 @@ impl StoryExecutor {
     pub fn new(config: ExecutorConfig) -> Self {
         // Attempt to create a checkpoint manager for the project root
         let checkpoint_manager = CheckpointManager::new(&config.project_root).ok();
+        let token_budget = config
+            .budget_config
+            .clone()
+            .map(TokenBudget::new);
         Self {
             config,
             checkpoint_manager,
             display_callback: None,
+            token_budget,
+            token_estimator: TokenEstimator::default(),
         }
     }
 
@@ -182,10 +219,16 @@ impl StoryExecutor {
         config: ExecutorConfig,
         checkpoint_manager: Option<CheckpointManager>,
     ) -> Self {
+        let token_budget = config
+            .budget_config
+            .clone()
+            .map(TokenBudget::new);
         Self {
             config,
             checkpoint_manager,
             display_callback: None,
+            token_budget,
+            token_estimator: TokenEstimator::default(),
         }
     }
 
@@ -201,6 +244,69 @@ impl StoryExecutor {
     /// Set the display callback on an existing executor.
     pub fn set_display_callback(&mut self, callback: Arc<dyn DisplayCallback>) {
         self.display_callback = Some(callback);
+    }
+
+    /// Get a reference to the token budget tracker.
+    pub fn token_budget(&self) -> Option<&TokenBudget> {
+        self.token_budget.as_ref()
+    }
+
+    /// Get a mutable reference to the token budget tracker.
+    pub fn token_budget_mut(&mut self) -> Option<&mut TokenBudget> {
+        self.token_budget.as_mut()
+    }
+
+    /// Check if execution can continue based on budget.
+    pub fn can_continue_budget(&self) -> bool {
+        self.token_budget
+            .as_ref()
+            .map(|b| b.can_continue())
+            .unwrap_or(true)
+    }
+
+    /// Get the current budget strategy based on usage.
+    pub fn budget_strategy(&self) -> BudgetStrategy {
+        self.token_budget
+            .as_ref()
+            .map(BudgetStrategy::from_budget)
+            .unwrap_or_default()
+    }
+
+    /// Record tokens used for a prompt.
+    fn record_prompt_tokens(&mut self, prompt: &str) {
+        if let Some(ref mut budget) = self.token_budget {
+            budget.record_prompt(prompt);
+        }
+    }
+
+    /// Record tokens used for output.
+    fn record_output_tokens(&mut self, output: &str) {
+        if let Some(ref mut budget) = self.token_budget {
+            budget.record_output(output);
+        }
+    }
+
+    /// Check budget and return error if exceeded.
+    fn check_budget(&self) -> Result<(), ExecutorError> {
+        if let Some(ref budget) = self.token_budget {
+            let enforcement = budget.enforce();
+            if !enforcement.can_continue {
+                return Err(ExecutorError::BudgetExceeded(
+                    enforcement
+                        .stop_reason
+                        .unwrap_or_else(|| "Token budget exceeded".to_string()),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the effective prompt strategy based on budget.
+    fn get_prompt_strategy(&self) -> PromptStrategy {
+        self.token_budget
+            .as_ref()
+            .map(|b| BudgetStrategy::from_budget(b).prompt_strategy)
+            .unwrap_or(PromptStrategy::Standard)
     }
 
     /// Continue execution of a story with user-provided steering guidance.
@@ -314,6 +420,10 @@ impl StoryExecutor {
         let mut last_error: Option<String> = None;
         let mut files_changed: Vec<String> = Vec::new();
         let mut last_gate_results: Vec<GateResult> = Vec::new();
+        // Token usage tracking
+        let mut total_tokens_used: u64 = 0;
+        let mut total_cost_cents: f64 = 0.0;
+        let mut _any_actual_usage = false;
 
         // Iteration loop
         for iteration in 1..=self.config.max_iterations {
@@ -340,8 +450,20 @@ impl StoryExecutor {
 
             // Run the agent
             match self.run_agent(&prompt, iteration).await {
-                Ok(changed) => {
-                    files_changed = changed;
+                Ok(result) => {
+                    files_changed = result.files_changed;
+                    // Track token usage
+                    let usage = &result.token_usage;
+                    total_tokens_used += usage.total();
+                    if usage.is_actual {
+                        _any_actual_usage = true;
+                    }
+                    // Estimate cost using default pricing (Claude Sonnet)
+                    if let (Some(input), Some(output)) = (usage.input_tokens, usage.output_tokens) {
+                        // Sonnet pricing: $0.003/1K input, $0.015/1K output
+                        total_cost_cents += (input as f64 / 1000.0) * 0.3
+                            + (output as f64 / 1000.0) * 1.5;
+                    }
                 }
                 Err(ExecutorError::Timeout(msg)) => {
                     // Record timeout error in context
@@ -403,6 +525,9 @@ impl StoryExecutor {
                                 futility_verdict: Some(verdict.clone()),
                                 iteration_context: Some(iter_context),
                                 needs_guidance,
+                                tokens_used: if total_tokens_used > 0 { Some(total_tokens_used) } else { None },
+                                estimated_cost_cents: if total_cost_cents > 0.0 { Some(total_cost_cents) } else { None },
+                                budget_exceeded: false,
                             });
                         }
                     }
@@ -455,6 +580,9 @@ impl StoryExecutor {
                     futility_verdict: None,
                     iteration_context: Some(iter_context),
                     needs_guidance: false,
+                    tokens_used: if total_tokens_used > 0 { Some(total_tokens_used) } else { None },
+                    estimated_cost_cents: if total_cost_cents > 0.0 { Some(total_cost_cents) } else { None },
+                    budget_exceeded: false,
                 });
             }
 
@@ -515,6 +643,9 @@ impl StoryExecutor {
                         futility_verdict: Some(verdict.clone()),
                         iteration_context: Some(iter_context),
                         needs_guidance,
+                        tokens_used: if total_tokens_used > 0 { Some(total_tokens_used) } else { None },
+                        estimated_cost_cents: if total_cost_cents > 0.0 { Some(total_cost_cents) } else { None },
+                        budget_exceeded: false,
                     });
                 }
             }
@@ -734,7 +865,7 @@ impl StoryExecutor {
     /// This method integrates heartbeat monitoring to detect stalled agents.
     /// The heartbeat is updated whenever the agent produces output, and stall
     /// detection triggers a graceful timeout.
-    async fn run_agent(&self, prompt: &str, iteration: u32) -> Result<Vec<String>, ExecutorError> {
+    async fn run_agent(&self, prompt: &str, iteration: u32) -> Result<AgentRunResult, ExecutorError> {
         let (program, args) = build_agent_invocation(
             &self.config.agent_command,
             prompt,
@@ -918,7 +1049,17 @@ impl StoryExecutor {
                             }
                             // Process completed successfully
                             let files_changed = self.get_changed_files()?;
-                            return Ok(files_changed);
+                            // Parse token usage from agent output
+                            let token_usage = extract_or_estimate(
+                                &stdout_output,
+                                prompt,
+                                &self.token_estimator,
+                            );
+                            return Ok(AgentRunResult {
+                                files_changed,
+                                token_usage,
+                                stdout: stdout_output,
+                            });
                         }
                         Err(e) => {
                             heartbeat_monitor.stop().await;
@@ -967,7 +1108,17 @@ impl StoryExecutor {
                         }
 
                         let files_changed = self.get_changed_files()?;
-                        return Ok(files_changed);
+                        // Parse token usage from agent output
+                        let token_usage = extract_or_estimate(
+                            &stdout_output,
+                            prompt,
+                            &self.token_estimator,
+                        );
+                        return Ok(AgentRunResult {
+                            files_changed,
+                            token_usage,
+                            stdout: stdout_output,
+                        });
                     }
                     Err(e) => {
                         heartbeat_monitor.stop().await;
@@ -995,7 +1146,13 @@ impl StoryExecutor {
 
         // Get list of changed files from git
         let files_changed = self.get_changed_files()?;
-        Ok(files_changed)
+        // Parse token usage from agent output
+        let token_usage = extract_or_estimate(&stdout_output, prompt, &self.token_estimator);
+        Ok(AgentRunResult {
+            files_changed,
+            token_usage,
+            stdout: stdout_output,
+        })
     }
 
     /// Build a comprehensive error message from agent output.

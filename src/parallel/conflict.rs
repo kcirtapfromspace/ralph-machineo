@@ -131,6 +131,9 @@ mod tests {
             futility_verdict: None,
             iteration_context: None,
             needs_guidance: false,
+            tokens_used: None,
+            estimated_cost_cents: None,
+            budget_exceeded: false,
         }
     }
 
