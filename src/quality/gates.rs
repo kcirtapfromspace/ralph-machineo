@@ -244,6 +244,9 @@ pub struct GateResult {
     pub message: String,
     /// Additional details about the gate result (e.g., specific errors, metrics)
     pub details: Option<String>,
+    /// Structured failure details for programmatic access
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<GateFailureDetail>,
 }
 
 impl GateResult {
@@ -254,20 +257,30 @@ impl GateResult {
             passed: true,
             message: message.into(),
             details: None,
+            failures: Vec::new(),
         }
     }
 
     /// Create a new failing gate result.
+    ///
+    /// # Arguments
+    ///
+    /// * `gate_name` - Name of the quality gate
+    /// * `message` - Human-readable message describing the failure
+    /// * `details` - Optional additional details (retained for backward compatibility)
+    /// * `failures` - Optional structured failure details for programmatic access
     pub fn fail(
         gate_name: impl Into<String>,
         message: impl Into<String>,
         details: Option<String>,
+        failures: Option<Vec<GateFailureDetail>>,
     ) -> Self {
         Self {
             gate_name: gate_name.into(),
             passed: false,
             message: message.into(),
             details,
+            failures: failures.unwrap_or_default(),
         }
     }
 
@@ -278,6 +291,7 @@ impl GateResult {
             passed: true, // Skipped gates count as passed
             message: format!("Skipped: {}", reason.into()),
             details: None,
+            failures: Vec::new(),
         }
     }
 }
@@ -352,6 +366,7 @@ impl QualityGateChecker {
                  Or install cargo-tarpaulin: cargo install cargo-tarpaulin"
                     .to_string(),
             ),
+            None,
         )
     }
 
@@ -383,6 +398,7 @@ impl QualityGateChecker {
                         "coverage",
                         "cargo llvm-cov failed",
                         Some(format!("stderr: {}", stderr)),
+                        None,
                     ));
                 }
 
@@ -398,6 +414,7 @@ impl QualityGateChecker {
                 "coverage",
                 "Failed to run cargo llvm-cov",
                 Some(e.to_string()),
+                None,
             )),
         }
     }
@@ -419,6 +436,7 @@ impl QualityGateChecker {
                         "coverage",
                         "cargo llvm-cov failed",
                         Some(format!("stderr: {}", stderr)),
+                        None,
                     ));
                 }
 
@@ -431,6 +449,7 @@ impl QualityGateChecker {
                         "coverage",
                         "Failed to parse llvm-cov output",
                         Some(format!("Output: {}", stdout)),
+                        None,
                     ))
                 }
             }
@@ -438,6 +457,7 @@ impl QualityGateChecker {
                 "coverage",
                 "Failed to run cargo llvm-cov",
                 Some(e.to_string()),
+                None,
             )),
         }
     }
@@ -495,6 +515,7 @@ impl QualityGateChecker {
                         "coverage",
                         "Failed to parse tarpaulin output",
                         Some(format!("stdout: {}\nstderr: {}", stdout, stderr)),
+                        None,
                     ))
                 }
             }
@@ -502,6 +523,7 @@ impl QualityGateChecker {
                 "coverage",
                 "Failed to run cargo tarpaulin",
                 Some(e.to_string()),
+                None,
             )),
         }
     }
@@ -553,6 +575,7 @@ impl QualityGateChecker {
                 Some(format!(
                     "Measured with {tool_name}. Increase test coverage to meet the threshold."
                 )),
+                None,
             )
         }
     }
@@ -583,13 +606,19 @@ impl QualityGateChecker {
                 } else {
                     // Extract the error details from stderr
                     let details = Self::extract_clippy_errors(&stderr);
-                    GateResult::fail("lint", "Clippy found warnings or errors", Some(details))
+                    GateResult::fail(
+                        "lint",
+                        "Clippy found warnings or errors",
+                        Some(details),
+                        None,
+                    )
                 }
             }
             Err(e) => GateResult::fail(
                 "lint",
                 "Failed to run cargo clippy",
                 Some(format!("Error: {}. Is clippy installed?", e)),
+                None,
             ),
         }
     }
@@ -643,13 +672,14 @@ impl QualityGateChecker {
                 } else {
                     // cargo fmt --check outputs files that need formatting to stdout
                     let details = Self::extract_format_errors(&stdout, &stderr);
-                    GateResult::fail("format", "Some files need formatting", Some(details))
+                    GateResult::fail("format", "Some files need formatting", Some(details), None)
                 }
             }
             Err(e) => GateResult::fail(
                 "format",
                 "Failed to run cargo fmt",
                 Some(format!("Error: {}. Is rustfmt installed?", e)),
+                None,
             ),
         }
     }
@@ -726,6 +756,7 @@ impl QualityGateChecker {
                          cargo-audit checks for known security vulnerabilities in dependencies."
                             .to_string(),
                     ),
+                    None,
                 )
             }
         }
@@ -759,6 +790,7 @@ impl QualityGateChecker {
                         "security_audit",
                         "Security vulnerabilities found",
                         Some(details),
+                        None,
                     )
                 }
             }
@@ -766,6 +798,7 @@ impl QualityGateChecker {
                 "security_audit",
                 "Failed to run cargo audit",
                 Some(format!("Error: {}", e)),
+                None,
             ),
         }
     }
@@ -798,6 +831,7 @@ impl QualityGateChecker {
                     if vuln_count == 1 { "y" } else { "ies" }
                 ),
                 Some(details),
+                None,
             ));
         }
 
@@ -1084,11 +1118,13 @@ mod tests {
             "test_gate",
             "Test failed",
             Some("Error details".to_string()),
+            None,
         );
         assert!(!result.passed);
         assert_eq!(result.gate_name, "test_gate");
         assert_eq!(result.message, "Test failed");
         assert_eq!(result.details, Some("Error details".to_string()));
+        assert!(result.failures.is_empty());
     }
 
     #[test]
@@ -1132,7 +1168,7 @@ mod tests {
     fn test_all_passed_false() {
         let results = vec![
             GateResult::pass("gate1", "Passed"),
-            GateResult::fail("gate2", "Failed", None),
+            GateResult::fail("gate2", "Failed", None, None),
         ];
         assert!(!QualityGateChecker::all_passed(&results));
     }
@@ -1151,8 +1187,8 @@ mod tests {
     fn test_summary_some_failed() {
         let results = vec![
             GateResult::pass("gate1", "Passed"),
-            GateResult::fail("gate2", "Failed", None),
-            GateResult::fail("gate3", "Failed", None),
+            GateResult::fail("gate2", "Failed", None, None),
+            GateResult::fail("gate3", "Failed", None, None),
         ];
         let summary = QualityGateChecker::summary(&results);
         assert!(summary.contains("1/3 gates passed"));
@@ -2121,5 +2157,120 @@ error: critical issue
             assert_eq!(detail.category, deserialized.category);
             assert_eq!(detail.message, deserialized.message);
         }
+    }
+
+    // ========================================================================
+    // GateResult with failures Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gate_result_fail_with_failures() {
+        let failures = vec![
+            GateFailureDetail::new(FailureCategory::Lint, "Unused variable")
+                .with_file("src/main.rs")
+                .with_line(10),
+            GateFailureDetail::new(FailureCategory::Lint, "Missing documentation")
+                .with_file("src/lib.rs")
+                .with_line(20),
+        ];
+        let result = GateResult::fail(
+            "lint",
+            "Clippy found warnings",
+            Some("Details".to_string()),
+            Some(failures.clone()),
+        );
+
+        assert!(!result.passed);
+        assert_eq!(result.gate_name, "lint");
+        assert_eq!(result.failures.len(), 2);
+        assert_eq!(result.failures[0].message, "Unused variable");
+        assert_eq!(result.failures[1].message, "Missing documentation");
+    }
+
+    #[test]
+    fn test_gate_result_fail_without_failures() {
+        let result = GateResult::fail("test", "Failed", None, None);
+        assert!(result.failures.is_empty());
+    }
+
+    #[test]
+    fn test_gate_result_pass_has_empty_failures() {
+        let result = GateResult::pass("lint", "No warnings");
+        assert!(result.failures.is_empty());
+    }
+
+    #[test]
+    fn test_gate_result_skipped_has_empty_failures() {
+        let result = GateResult::skipped("coverage", "Not enabled");
+        assert!(result.failures.is_empty());
+    }
+
+    #[test]
+    fn test_gate_result_serialization_without_failures() {
+        let result = GateResult::pass("lint", "No warnings");
+        let json = serde_json::to_string(&result).expect("Failed to serialize");
+
+        // Empty failures should not appear in JSON (skip_serializing_if = "Vec::is_empty")
+        assert!(!json.contains("\"failures\""));
+    }
+
+    #[test]
+    fn test_gate_result_serialization_with_failures() {
+        let failures = vec![GateFailureDetail::new(
+            FailureCategory::TypeCheck,
+            "Type mismatch",
+        )];
+        let result = GateResult::fail("typecheck", "Type errors found", None, Some(failures));
+        let json = serde_json::to_string(&result).expect("Failed to serialize");
+
+        // Non-empty failures should appear in JSON
+        assert!(json.contains("\"failures\""));
+        assert!(json.contains("Type mismatch"));
+    }
+
+    #[test]
+    fn test_gate_result_deserialization_backward_compatible() {
+        // Old JSON format without failures field should still deserialize
+        let json = r#"{
+            "gate_name": "lint",
+            "passed": true,
+            "message": "No warnings",
+            "details": null
+        }"#;
+
+        let result: GateResult = serde_json::from_str(json).expect("Should deserialize old format");
+        assert_eq!(result.gate_name, "lint");
+        assert!(result.passed);
+        assert!(result.failures.is_empty()); // Default empty vec
+    }
+
+    #[test]
+    fn test_gate_result_serialization_roundtrip_with_failures() {
+        let failures =
+            vec![
+                GateFailureDetail::new(FailureCategory::Security, "Vulnerability found")
+                    .with_error_code("RUSTSEC-2023-0001")
+                    .with_suggestion("Upgrade dependency"),
+            ];
+        let result = GateResult::fail(
+            "security_audit",
+            "Security issues",
+            Some("1 vulnerability".to_string()),
+            Some(failures),
+        );
+
+        let json = serde_json::to_string(&result).expect("Failed to serialize");
+        let deserialized: GateResult = serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(result.gate_name, deserialized.gate_name);
+        assert_eq!(result.passed, deserialized.passed);
+        assert_eq!(result.message, deserialized.message);
+        assert_eq!(result.details, deserialized.details);
+        assert_eq!(result.failures.len(), deserialized.failures.len());
+        assert_eq!(result.failures[0].message, deserialized.failures[0].message);
+        assert_eq!(
+            result.failures[0].error_code,
+            deserialized.failures[0].error_code
+        );
     }
 }
