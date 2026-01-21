@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "created_at": "2026-01-21T04:52:30.336916Z",
+  "created_at": "2026-01-21T05:29:29.187727Z",
   "current_story": {
-    "story_id": "US-006",
+    "story_id": "US-007",
     "iteration": 1,
     "max_iterations": 10
   },
@@ -10,6 +10,12 @@
   "uncommitted_files": [
     "ralph/checkpoint.json",
     "ralph/evidence/runs/run-1768970049349-97465/events.jsonl",
-    "ralph/evidence/runs/run-1768970049349-97465/run.json"
+    "ralph/evidence/runs/run-1768970049349-97465/run.json",
+    "rc/checkpoint/mod.rs",
+    "rc/quality/gates.rs",
+    "rc/runner.rs",
+    ".ralph/evidence/runs/run-1768971613460-24261/",
+    ".ralph/evidence/runs/run-1768973367003-85330/",
+    ".ralph/runs/run-1768970049349-97465.json"
   ]
 }

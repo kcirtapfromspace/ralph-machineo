@@ -26,6 +26,36 @@ pub enum PauseReason {
     Error(String),
     /// Checkpoint saved at iteration boundary (for recovery if interrupted)
     IterationBoundary,
+    /// Circuit breaker was triggered due to consecutive failures
+    CircuitBreakerTriggered {
+        /// Number of consecutive failures that triggered the circuit breaker
+        consecutive_failures: u32,
+        /// Threshold at which the circuit breaker triggers
+        threshold: u32,
+    },
+}
+
+impl std::fmt::Display for PauseReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PauseReason::UsageLimitExceeded => write!(f, "Usage limit exceeded"),
+            PauseReason::RateLimited => write!(f, "Rate limited"),
+            PauseReason::UserRequested => write!(f, "User requested"),
+            PauseReason::Timeout => write!(f, "Timeout"),
+            PauseReason::Error(msg) => write!(f, "Error: {}", msg),
+            PauseReason::IterationBoundary => write!(f, "Iteration boundary"),
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures,
+                threshold: _,
+            } => {
+                write!(
+                    f,
+                    "Circuit breaker triggered after {} consecutive failures",
+                    consecutive_failures
+                )
+            }
+        }
+    }
 }
 
 /// Checkpoint data for a single story's execution state.
@@ -97,6 +127,11 @@ mod tests {
             PauseReason::UserRequested,
             PauseReason::Timeout,
             PauseReason::Error("Connection failed".to_string()),
+            PauseReason::IterationBoundary,
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures: 5,
+                threshold: 3,
+            },
         ];
 
         for reason in reasons {
@@ -168,5 +203,56 @@ mod tests {
 
         let json = serde_json::to_string(&PauseReason::Error("test".to_string())).unwrap();
         assert!(json.contains("error"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_triggered_serialization_roundtrip() {
+        let reason = PauseReason::CircuitBreakerTriggered {
+            consecutive_failures: 5,
+            threshold: 3,
+        };
+
+        let json = serde_json::to_string(&reason).expect("Failed to serialize");
+        let deserialized: PauseReason = serde_json::from_str(&json).expect("Failed to deserialize");
+
+        assert_eq!(reason, deserialized);
+
+        // Verify the JSON structure
+        assert!(json.contains("circuit_breaker_triggered"));
+        assert!(json.contains("consecutive_failures"));
+        assert!(json.contains("threshold"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_triggered_display() {
+        let reason = PauseReason::CircuitBreakerTriggered {
+            consecutive_failures: 5,
+            threshold: 3,
+        };
+
+        let display = format!("{}", reason);
+        assert_eq!(
+            display,
+            "Circuit breaker triggered after 5 consecutive failures"
+        );
+    }
+
+    #[test]
+    fn test_pause_reason_display() {
+        assert_eq!(
+            format!("{}", PauseReason::UsageLimitExceeded),
+            "Usage limit exceeded"
+        );
+        assert_eq!(format!("{}", PauseReason::RateLimited), "Rate limited");
+        assert_eq!(format!("{}", PauseReason::UserRequested), "User requested");
+        assert_eq!(format!("{}", PauseReason::Timeout), "Timeout");
+        assert_eq!(
+            format!("{}", PauseReason::Error("test error".to_string())),
+            "Error: test error"
+        );
+        assert_eq!(
+            format!("{}", PauseReason::IterationBoundary),
+            "Iteration boundary"
+        );
     }
 }
