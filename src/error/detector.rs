@@ -341,19 +341,29 @@ impl ErrorDetector {
     pub fn classify_error(&self, text: &str) -> Option<ClassifiedError> {
         for pattern in &self.patterns {
             if pattern.matches(text) {
-                // Safe to unwrap since matches() returned true
-                let matched = pattern
-                    .find(text)
-                    .expect("pattern should match after matches() returned true");
-                return Some(
-                    ClassifiedError::new(
-                        pattern.category.clone(),
-                        pattern.description.clone(),
-                        pattern.recovery_hint.clone(),
-                    )
-                    .add_context("matched_pattern", matched)
-                    .add_context("original_text", text),
-                );
+                // Use defensive pattern matching instead of expect()
+                // This handles the edge case where find() might unexpectedly fail after matches()
+                if let Some(matched) = pattern.find(text) {
+                    return Some(
+                        ClassifiedError::new(
+                            pattern.category.clone(),
+                            pattern.description.clone(),
+                            pattern.recovery_hint.clone(),
+                        )
+                        .add_context("matched_pattern", matched)
+                        .add_context("original_text", text),
+                    );
+                } else {
+                    // This should never happen: matches() returned true but find() returned None
+                    // Log this edge case for debugging purposes
+                    tracing::debug!(
+                        pattern_description = %pattern.description,
+                        text = %text,
+                        "Unexpected: pattern.matches() returned true but pattern.find() returned None"
+                    );
+                    // Continue to next pattern instead of panicking
+                    continue;
+                }
             }
         }
         None
