@@ -1096,8 +1096,8 @@ impl ParallelRunner {
         graph: &DependencyGraph,
         agent: &str,
         total_iterations: &mut u32,
-        _evidence: &Option<Arc<Mutex<EvidenceWriter>>>,
-        _run_metrics: &RunMetricsCollector,
+        evidence: &Option<Arc<Mutex<EvidenceWriter>>>,
+        run_metrics: &RunMetricsCollector,
         ui_sender: &Option<mpsc::Sender<ParallelUIEvent>>,
         story_info_map: &HashMap<String, StoryDisplayInfo>,
     ) -> Option<String> {
@@ -1174,6 +1174,7 @@ impl ParallelRunner {
 
                             // Send StoryStarted event for sequential retry
                             let start_time = Instant::now();
+                            run_metrics.start_step(story_id);
                             if let Some(ref sender) = ui_sender {
                                 let story_info =
                                     story_info_map.get(story_id).cloned().unwrap_or_else(|| {
@@ -1220,13 +1221,26 @@ impl ParallelRunner {
                                 })
                                 .await;
 
-                            let duration_ms = start_time.elapsed().as_millis() as u64;
+                            let duration = start_time.elapsed();
+                            let duration_ms = duration.as_millis() as u64;
 
                             match result {
                                 Ok(exec_result) if exec_result.success => {
                                     let mut state = self.execution_state.write().await;
                                     state.completed.insert(story_id.clone());
                                     *total_iterations += exec_result.iterations_used;
+                                    // Record metrics and evidence
+                                    let attempts = exec_result.iterations_used.max(1);
+                                    run_metrics.complete_step(story_id, true, attempts, duration, None);
+                                    emit_step_event(
+                                        evidence,
+                                        run_metrics,
+                                        story_id,
+                                        "completed",
+                                        None,
+                                        None,
+                                    )
+                                    .await;
                                     // Send StoryCompleted event
                                     if let Some(ref sender) = ui_sender {
                                         let event = ParallelUIEvent::StoryCompleted {
@@ -1241,9 +1255,28 @@ impl ParallelRunner {
                                     let mut state = self.execution_state.write().await;
                                     let error_msg = exec_result
                                         .error
+                                        .clone()
                                         .unwrap_or_else(|| "Unknown error".to_string());
                                     state.failed.insert(story_id.clone(), error_msg.clone());
                                     *total_iterations += exec_result.iterations_used;
+                                    // Record metrics and evidence
+                                    let attempts = exec_result.iterations_used.max(1);
+                                    run_metrics.complete_step(
+                                        story_id,
+                                        false,
+                                        attempts,
+                                        duration,
+                                        Some(error_msg.clone()),
+                                    );
+                                    emit_step_event(
+                                        evidence,
+                                        run_metrics,
+                                        story_id,
+                                        "failed",
+                                        Some("quality_gates_failed".to_string()),
+                                        Some(error_msg.clone()),
+                                    )
+                                    .await;
                                     // Send StoryFailed event
                                     if let Some(ref sender) = ui_sender {
                                         let event = ParallelUIEvent::StoryFailed {
@@ -1258,6 +1291,24 @@ impl ParallelRunner {
                                     let mut state = self.execution_state.write().await;
                                     state.failed.insert(story_id.clone(), e.to_string());
                                     *total_iterations += 1;
+                                    // Record metrics and evidence
+                                    let category = e.classify();
+                                    run_metrics.complete_step(
+                                        story_id,
+                                        false,
+                                        1,
+                                        duration,
+                                        Some(e.to_string()),
+                                    );
+                                    emit_step_event(
+                                        evidence,
+                                        run_metrics,
+                                        story_id,
+                                        "failed",
+                                        Some(error_category_label(&category).to_string()),
+                                        Some(e.to_string()),
+                                    )
+                                    .await;
                                     // Send StoryFailed event
                                     if let Some(ref sender) = ui_sender {
                                         let event = ParallelUIEvent::StoryFailed {
