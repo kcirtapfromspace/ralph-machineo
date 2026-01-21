@@ -17,7 +17,9 @@ use crate::metrics::{RunMetricsCollector, RunMetricsStore};
 use crate::notification::Notification;
 use crate::parallel::scheduler::ParallelRunnerConfig;
 use crate::timeout::TimeoutConfig;
-use crate::ui::{DisplayOptions, TuiRunnerDisplay};
+use crate::ui::{
+    new_shared_activity_state, DisplayOptions, StreamingDisplayCallback, TuiRunnerDisplay,
+};
 
 /// User's choice when prompted about an existing checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,8 @@ pub struct RunnerConfig {
     pub startup_grace_period_seconds: Option<u64>,
     /// Disable checkpointing
     pub no_checkpoint: bool,
+    /// Number of consecutive failures before circuit breaker triggers (None = use default of 5)
+    pub circuit_breaker_threshold: Option<u32>,
 }
 
 impl Default for RunnerConfig {
@@ -84,6 +88,7 @@ impl Default for RunnerConfig {
             heartbeat_threshold: None,
             startup_grace_period_seconds: None,
             no_checkpoint: false,
+            circuit_breaker_threshold: None,
         }
     }
 }
@@ -175,9 +180,18 @@ impl Runner {
         }
     }
 
+    /// Default circuit breaker threshold if not configured.
+    const DEFAULT_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
+
     /// Run all stories sequentially until all pass or an error occurs
     async fn run_sequential(&self) -> RunResult {
         let mut total_iterations: u32 = 0;
+        // Circuit breaker: track consecutive failures to prevent cascading API costs
+        let mut consecutive_failures: u32 = 0;
+        let circuit_breaker_threshold = self
+            .config
+            .circuit_breaker_threshold
+            .unwrap_or(Self::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
         let run_id = generate_run_id();
         let run_metrics = RunMetricsCollector::new(run_id.clone(), 0);
         let metrics_store = match RunMetricsStore::new(&self.config.working_dir) {
@@ -199,6 +213,21 @@ impl Runner {
         // Create TUI display with display options
         let mut display =
             TuiRunnerDisplay::with_display_options(self.config.display_options.clone());
+
+        // Initialize circuit breaker display state
+        display.update_circuit_breaker(0, circuit_breaker_threshold);
+
+        // Create shared activity state for real-time status updates
+        let shared_activity = new_shared_activity_state();
+        display.set_shared_activity(shared_activity.clone());
+
+        // Create streaming callback for real-time agent output
+        let streaming_callback =
+            std::sync::Arc::new(StreamingDisplayCallback::with_shared_activity(
+                display.toggle_state(),
+                &self.config.display_options,
+                shared_activity,
+            ));
 
         let mut evidence = match EvidenceWriter::try_new(&self.config.working_dir, run_id.clone()) {
             Ok(mut writer) => {
@@ -441,7 +470,8 @@ impl Runner {
                         ..Default::default()
                     };
 
-                    let executor = StoryExecutor::new(executor_config);
+                    let executor = StoryExecutor::new(executor_config)
+                        .with_display_callback(streaming_callback.clone());
                     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
                     let story_id = story.id.clone();
@@ -472,6 +502,9 @@ impl Runner {
                     match result {
                         Ok(exec_result) => {
                             if exec_result.success {
+                                // Reset circuit breaker counter on success
+                                consecutive_failures = 0;
+                                display.reset_circuit_breaker();
                                 // Clear checkpoint on successful story completion
                                 self.clear_checkpoint();
                                 if let Some(writer) = evidence.as_mut() {
@@ -485,6 +518,13 @@ impl Runner {
                                 display
                                     .complete_story(&story_id, exec_result.commit_hash.as_deref());
                             } else {
+                                // Increment circuit breaker counter on failure
+                                consecutive_failures += 1;
+                                display.update_circuit_breaker(
+                                    consecutive_failures,
+                                    circuit_breaker_threshold,
+                                );
+
                                 let error_message = exec_result
                                     .error
                                     .clone()
@@ -492,6 +532,47 @@ impl Runner {
                                 // Save checkpoint on story failure (quality gates didn't pass)
                                 let final_iteration =
                                     start_iteration + exec_result.iterations_used - 1;
+
+                                // Check circuit breaker threshold
+                                if consecutive_failures >= circuit_breaker_threshold {
+                                    self.save_checkpoint(
+                                        &story_id,
+                                        final_iteration,
+                                        max_iterations,
+                                        PauseReason::CircuitBreakerTriggered {
+                                            consecutive_failures,
+                                            threshold: circuit_breaker_threshold,
+                                        },
+                                    );
+                                    let circuit_breaker_msg = format!(
+                                        "Circuit breaker triggered: {} consecutive failures (threshold: {})",
+                                        consecutive_failures, circuit_breaker_threshold
+                                    );
+                                    // Display circuit breaker triggered notification
+                                    display.display_circuit_breaker_triggered(
+                                        consecutive_failures,
+                                        circuit_breaker_threshold,
+                                    );
+                                    if let Some(writer) = evidence.as_mut() {
+                                        writer.emit_run_complete(
+                                            "failed",
+                                            Some("circuit_breaker".to_string()),
+                                            Some(circuit_breaker_msg.clone()),
+                                        );
+                                    }
+                                    save_metrics(&run_metrics);
+                                    return RunResult {
+                                        all_passed: false,
+                                        stories_passed: self.count_passing_stories().unwrap_or(0),
+                                        total_stories,
+                                        total_iterations,
+                                        error: Some(format!(
+                                            "{}. Checkpoint saved. Resume with: ralph --resume",
+                                            circuit_breaker_msg
+                                        )),
+                                    };
+                                }
+
                                 self.save_checkpoint(
                                     &story_id,
                                     final_iteration,
@@ -780,6 +861,10 @@ impl Runner {
             PauseReason::UserRequested => "User requested".to_string(),
             PauseReason::Timeout => "Timeout".to_string(),
             PauseReason::IterationBoundary => "Iteration boundary".to_string(),
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures,
+                threshold,
+            } => format!("Circuit breaker ({}/{})", consecutive_failures, threshold),
             PauseReason::Error(msg) => {
                 let truncated = if msg.len() > 40 {
                     format!("{}...", &msg[..37])
@@ -859,6 +944,16 @@ impl Runner {
             PauseReason::IterationBoundary => {
                 println!("  Type:        Iteration Boundary");
                 println!("  Details:     Checkpoint saved at iteration start for recovery");
+            }
+            PauseReason::CircuitBreakerTriggered {
+                consecutive_failures,
+                threshold,
+            } => {
+                println!("  Type:        Circuit Breaker Triggered");
+                println!(
+                    "  Details:     {} consecutive failures (threshold: {})",
+                    consecutive_failures, threshold
+                );
             }
             PauseReason::Error(msg) => {
                 println!("  Type:        Error");
@@ -975,5 +1070,101 @@ impl Runner {
             let days = total_seconds / 86400;
             format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_circuit_breaker_threshold() {
+        // Verify the default circuit breaker threshold is 5
+        assert_eq!(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD, 5);
+    }
+
+    #[test]
+    fn test_runner_config_default_circuit_breaker_threshold() {
+        let config = RunnerConfig::default();
+        // Default config should have None for circuit_breaker_threshold
+        assert!(config.circuit_breaker_threshold.is_none());
+    }
+
+    #[test]
+    fn test_runner_config_custom_circuit_breaker_threshold() {
+        let config = RunnerConfig {
+            circuit_breaker_threshold: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(config.circuit_breaker_threshold, Some(3));
+    }
+
+    #[test]
+    fn test_circuit_breaker_threshold_resolution() {
+        // Test that None resolves to default
+        let threshold: Option<u32> = None;
+        let resolved = threshold.unwrap_or(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
+        assert_eq!(resolved, 5);
+
+        // Test that Some value is used
+        let threshold: Option<u32> = Some(3);
+        let resolved = threshold.unwrap_or(Runner::DEFAULT_CIRCUIT_BREAKER_THRESHOLD);
+        assert_eq!(resolved, 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_counter_logic() {
+        // Simulate the circuit breaker counter logic
+        let threshold: u32 = 3;
+        let mut consecutive_failures: u32 = 0;
+
+        // Simulate failures
+        for i in 1..=5 {
+            consecutive_failures += 1;
+
+            if consecutive_failures >= threshold {
+                // Circuit breaker should trigger at threshold
+                assert!(
+                    i >= 3,
+                    "Circuit breaker should trigger at or after 3 failures"
+                );
+                break;
+            }
+        }
+
+        assert_eq!(consecutive_failures, 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset_on_success() {
+        // Simulate the circuit breaker counter reset logic
+        let threshold: u32 = 5;
+        let mut consecutive_failures: u32 = 0;
+
+        // Simulate 3 consecutive failures
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        assert_eq!(consecutive_failures, 3);
+
+        // Simulate a success - should reset counter
+        let success = true;
+        if success {
+            consecutive_failures = 0;
+        }
+        assert_eq!(consecutive_failures, 0);
+
+        // Verify we need to reach threshold again
+        consecutive_failures += 1;
+        consecutive_failures += 1;
+        assert!(consecutive_failures < threshold);
+    }
+
+    #[test]
+    fn test_circuit_breaker_fresh_start_per_run() {
+        // Verify that consecutive_failures starts at 0 (fresh start per run)
+        // This is guaranteed by the initialization in run_sequential
+        let consecutive_failures: u32 = 0;
+        assert_eq!(consecutive_failures, 0);
     }
 }

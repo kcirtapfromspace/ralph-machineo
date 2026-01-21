@@ -434,7 +434,12 @@ mod tests {
 
     #[test]
     fn test_from_gate_result_failed() {
-        let result = GateResult::fail("coverage", "Below threshold", Some("Details".to_string()));
+        let result = GateResult::fail(
+            "coverage",
+            "Below threshold",
+            Some("Details".to_string()),
+            None,
+        );
         let view = QualityGateView::from_gate_result(&result);
         assert_eq!(view.status, GateStatus::Failed);
         assert!(view.details.is_some());

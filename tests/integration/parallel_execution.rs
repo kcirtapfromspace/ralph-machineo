@@ -173,3 +173,133 @@ fn test_run_command_help_shows_parallel_options() {
         .stdout(predicate::str::contains("--parallel"))
         .stdout(predicate::str::contains("--max-concurrency"));
 }
+
+// ============================================================================
+// Circuit Breaker Integration Tests
+// ============================================================================
+
+/// Test PRD with failing stories to trigger circuit breaker.
+/// These stories have passes: false and will require an agent to run,
+/// which will fail since no real agent is available in tests.
+const TEST_PRD_FAILING_STORIES: &str = r#"{
+    "project": "CircuitBreakerTestProject",
+    "branchName": "test/circuit-breaker",
+    "description": "Test PRD for circuit breaker integration test",
+    "userStories": [
+        {
+            "id": "CB-001",
+            "title": "First Failing Story",
+            "description": "First story that will fail",
+            "acceptanceCriteria": ["Will fail because no agent"],
+            "priority": 1,
+            "passes": false,
+            "dependsOn": [],
+            "targetFiles": ["src/feature_a.rs"]
+        },
+        {
+            "id": "CB-002",
+            "title": "Second Failing Story",
+            "description": "Second story that will fail",
+            "acceptanceCriteria": ["Will fail because no agent"],
+            "priority": 2,
+            "passes": false,
+            "dependsOn": [],
+            "targetFiles": ["src/feature_b.rs"]
+        },
+        {
+            "id": "CB-003",
+            "title": "Third Failing Story",
+            "description": "Third story that will fail",
+            "acceptanceCriteria": ["Will fail because no agent"],
+            "priority": 3,
+            "passes": false,
+            "dependsOn": [],
+            "targetFiles": ["src/feature_c.rs"]
+        }
+    ],
+    "parallel": {
+        "enabled": true,
+        "maxConcurrency": 3
+    }
+}"#;
+
+/// Test that circuit breaker threshold option is recognized by the CLI.
+///
+/// This verifies the --circuit-breaker-threshold flag is properly parsed
+/// even when combined with --parallel mode.
+#[test]
+fn test_parallel_circuit_breaker_threshold_option_recognized() {
+    ralph_cmd()
+        .args(["run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--circuit-breaker-threshold"));
+}
+
+/// Test that parallel execution with failing stories exits with error
+/// when no agent is available.
+///
+/// This test verifies that when stories fail (because no agent can execute them),
+/// the parallel runner properly handles the failure and exits with an error.
+#[test]
+fn test_parallel_execution_fails_without_agent() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let prd_path = temp_dir.path().join("prd.json");
+
+    fs::write(&prd_path, TEST_PRD_FAILING_STORIES).expect("Failed to write test PRD");
+
+    // With failing stories and no agent, should fail
+    ralph_cmd()
+        .current_dir(temp_dir.path())
+        .arg("--parallel")
+        .arg("--max-concurrency")
+        .arg("3")
+        .arg("--no-checkpoint") // Disable checkpointing for cleaner test
+        .timeout(std::time::Duration::from_secs(15))
+        .assert()
+        .failure(); // Should fail because no agent is available
+}
+
+/// Test that parallel execution with custom circuit breaker threshold is accepted.
+///
+/// This verifies the CLI accepts a custom threshold value with parallel mode.
+#[test]
+fn test_parallel_with_custom_circuit_breaker_threshold_option() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let prd_path = temp_dir.path().join("prd.json");
+
+    // Use passing stories to verify option is accepted
+    fs::write(&prd_path, TEST_PRD_PARALLEL).expect("Failed to write test PRD");
+
+    ralph_cmd()
+        .current_dir(temp_dir.path())
+        .arg("--parallel")
+        .arg("--max-concurrency")
+        .arg("3")
+        .arg("--circuit-breaker-threshold")
+        .arg("3")
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+}
+
+/// Test that parallel execution with circuit breaker threshold of 1 is accepted.
+///
+/// A threshold of 1 means the circuit breaker triggers on the first failure.
+#[test]
+fn test_parallel_with_circuit_breaker_threshold_one() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let prd_path = temp_dir.path().join("prd.json");
+
+    // Use passing stories - we're just testing the option is accepted
+    fs::write(&prd_path, TEST_PRD_PARALLEL).expect("Failed to write test PRD");
+
+    ralph_cmd()
+        .current_dir(temp_dir.path())
+        .arg("--parallel")
+        .arg("--circuit-breaker-threshold")
+        .arg("1")
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .success();
+}

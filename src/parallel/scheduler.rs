@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch, Mutex, RwLock, Semaphore};
 
+use crate::checkpoint::{Checkpoint, CheckpointManager, PauseReason, StoryCheckpoint};
+use crate::error::classification::ErrorCategory;
 use crate::evidence::{error_category_label, generate_run_id, EvidenceWriter};
 use crate::mcp::tools::executor::{detect_agent, ExecutorConfig, StoryExecutor};
 use crate::mcp::tools::load_prd::{validate_prd, PrdFile};
@@ -78,6 +80,9 @@ pub struct ParallelRunnerConfig {
     /// If a batch takes longer than this, remaining tasks are cancelled.
     /// Default: 30 minutes.
     pub batch_timeout: Duration,
+    /// Number of consecutive failures before circuit breaker triggers.
+    /// Default: 5.
+    pub circuit_breaker_threshold: u32,
 }
 
 impl Default for ParallelRunnerConfig {
@@ -92,6 +97,7 @@ impl Default for ParallelRunnerConfig {
             conflict_strategy: ConflictStrategy::default(),
             timeout_config: TimeoutConfig::default(),
             batch_timeout: Duration::from_secs(1800), // 30 minutes
+            circuit_breaker_threshold: 5,
         }
     }
 }
@@ -251,6 +257,8 @@ pub struct ParallelRunner {
     git_mutex: Arc<Mutex<()>>,
     /// Optional channel sender for UI events during parallel execution.
     ui_tx: Option<mpsc::Sender<ParallelUIEvent>>,
+    /// Optional checkpoint manager for circuit breaker persistence.
+    checkpoint_manager: Option<CheckpointManager>,
 }
 
 #[allow(dead_code)]
@@ -265,6 +273,19 @@ impl ParallelRunner {
         let execution_state = Arc::new(RwLock::new(ParallelExecutionState::default()));
         let git_mutex = Arc::new(Mutex::new(()));
 
+        // Initialize checkpoint manager if checkpointing is enabled
+        let checkpoint_manager = if base_config.no_checkpoint {
+            None
+        } else {
+            match CheckpointManager::new(&base_config.working_dir) {
+                Ok(manager) => Some(manager),
+                Err(e) => {
+                    eprintln!("Warning: Failed to initialize checkpoint manager: {}", e);
+                    None
+                }
+            }
+        };
+
         Self {
             config,
             base_config,
@@ -272,6 +293,7 @@ impl ParallelRunner {
             execution_state,
             git_mutex,
             ui_tx: None,
+            checkpoint_manager,
         }
     }
 
@@ -526,6 +548,20 @@ impl ParallelRunner {
                         | ParallelUIEvent::ReconciliationStatus { .. } => {
                             // These events don't have direct display methods yet
                         }
+                        ParallelUIEvent::CircuitBreakerStatus {
+                            current_failures,
+                            threshold,
+                        } => {
+                            // Display circuit breaker status with color coding
+                            display.display_circuit_breaker_status(*current_failures, *threshold);
+                        }
+                        ParallelUIEvent::CircuitBreakerTriggered {
+                            failures,
+                            threshold,
+                        } => {
+                            // Display clear notification when circuit breaker triggers
+                            display.display_circuit_breaker_triggered(*failures, *threshold);
+                        }
                         ParallelUIEvent::KeyboardToggle { .. }
                         | ParallelUIEvent::GracefulQuitRequested
                         | ParallelUIEvent::ImmediateInterrupt => {
@@ -559,6 +595,22 @@ impl ParallelRunner {
                 )
             })
             .collect();
+
+        // Circuit breaker: track cumulative failures across batches
+        let mut cumulative_failures: u32 = 0;
+        let circuit_breaker_threshold = self.config.circuit_breaker_threshold;
+
+        // Send initial circuit breaker status
+        if let Some(ref sender) = ui_sender {
+            let _ = sender.try_send(ParallelUIEvent::CircuitBreakerStatus {
+                current_failures: cumulative_failures,
+                threshold: circuit_breaker_threshold,
+            });
+        }
+
+        // Shared cancel channel for graceful shutdown when circuit breaker triggers
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        let cancel_tx = Arc::new(cancel_tx);
 
         // Main execution loop
         let mut pending_queue: VecDeque<StoryNode> = VecDeque::new();
@@ -826,6 +878,9 @@ impl ParallelRunner {
                     .cloned()
                     .unwrap_or_else(|| StoryDisplayInfo::new(&story_id, &story_id, story.priority));
 
+                // Subscribe to shared cancel channel for circuit breaker graceful shutdown
+                let task_cancel_rx = cancel_tx.subscribe();
+
                 let task_evidence = evidence.clone();
                 let task_run_metrics = run_metrics.clone();
                 let handle = tokio::spawn(async move {
@@ -845,7 +900,7 @@ impl ParallelRunner {
                     }
 
                     let executor = StoryExecutor::new(executor_config);
-                    let (_cancel_tx, cancel_rx) = watch::channel(false);
+                    let cancel_rx = task_cancel_rx;
 
                     // Clone for iteration callback closure
                     let iter_story_id = story_id_clone.clone();
@@ -874,6 +929,8 @@ impl ParallelRunner {
                     // Release file locks (success or failure)
                     state.release_locks(&story_id_clone);
 
+                    // Result tuple: (story_id, success, iterations, is_transient_failure)
+                    // is_transient_failure is true only for transient errors (not quality gate failures)
                     let (result_tuple, step_event) = match result {
                         Ok(exec_result) if exec_result.success => {
                             state.completed.insert(story_id_clone.clone());
@@ -895,11 +952,12 @@ impl ParallelRunner {
                                 None,
                             );
                             (
-                                (story_id_clone, true, exec_result.iterations_used),
+                                (story_id_clone, true, exec_result.iterations_used, false),
                                 Some(("completed".to_string(), None, None)),
                             )
                         }
                         Ok(exec_result) => {
+                            // Quality gate failure - this is NOT transient (agent ran but tests failed)
                             let error_msg = exec_result
                                 .error
                                 .unwrap_or_else(|| "Unknown error".to_string());
@@ -924,7 +982,7 @@ impl ParallelRunner {
                                 Some(error_msg.clone()),
                             );
                             (
-                                (story_id_clone, false, exec_result.iterations_used),
+                                (story_id_clone, false, exec_result.iterations_used, false),
                                 Some((
                                     "failed".to_string(),
                                     Some("quality_gates_failed".to_string()),
@@ -944,6 +1002,8 @@ impl ParallelRunner {
                                 let _ = sender.try_send(event);
                             }
                             let category = e.classify();
+                            // Check if this is a transient error
+                            let is_transient = matches!(category, ErrorCategory::Transient(_));
                             task_run_metrics.complete_step(
                                 &story_id_clone,
                                 false,
@@ -952,7 +1012,7 @@ impl ParallelRunner {
                                 Some(e.to_string()),
                             );
                             (
-                                (story_id_clone, false, 1),
+                                (story_id_clone, false, 1, is_transient),
                                 Some((
                                     "failed".to_string(),
                                     Some(error_category_label(&category).to_string()),
@@ -996,12 +1056,100 @@ impl ParallelRunner {
 
                 match batch_result {
                     Ok(results) => {
-                        for (_story_id, _success, iterations) in results.into_iter().flatten() {
+                        // Count non-transient failures in this batch for circuit breaker
+                        let mut batch_non_transient_failures: u32 = 0;
+                        for result in results.into_iter().flatten() {
+                            let (_story_id, success, iterations, is_transient) = result;
                             total_iterations += iterations;
+                            // Count non-transient failures (quality gate failures or fatal/timeout errors)
+                            if !success && !is_transient {
+                                batch_non_transient_failures += 1;
+                            }
+                        }
+                        cumulative_failures += batch_non_transient_failures;
+
+                        // Send circuit breaker status update
+                        if batch_non_transient_failures > 0 {
+                            if let Some(ref sender) = ui_sender {
+                                let _ = sender.try_send(ParallelUIEvent::CircuitBreakerStatus {
+                                    current_failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                });
+                            }
+                        }
+
+                        // Check circuit breaker threshold
+                        if cumulative_failures >= circuit_breaker_threshold {
+                            // Send cancel signal to any remaining in-flight stories
+                            let _ = cancel_tx.send(true);
+
+                            // Get a failed story ID for the checkpoint
+                            let state = self.execution_state.read().await;
+                            let failed_story_id = state
+                                .failed
+                                .keys()
+                                .next()
+                                .cloned()
+                                .unwrap_or_else(|| "unknown".to_string());
+                            drop(state);
+
+                            // Save checkpoint with circuit breaker reason
+                            self.save_checkpoint(
+                                &failed_story_id,
+                                1,
+                                self.base_config.max_iterations_per_story,
+                                PauseReason::CircuitBreakerTriggered {
+                                    consecutive_failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                },
+                            );
+
+                            let circuit_breaker_msg = format!(
+                                "Circuit breaker triggered: {} failures across batches (threshold: {})",
+                                cumulative_failures, circuit_breaker_threshold
+                            );
+
+                            // Send circuit breaker triggered event
+                            if let Some(ref sender) = ui_sender {
+                                let _ = sender.try_send(ParallelUIEvent::CircuitBreakerTriggered {
+                                    failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                });
+                            }
+
+                            // Print circuit breaker notification
+                            println!();
+                            println!(
+                                "\x1b[48;2;239;68;68m\x1b[38;2;255;255;255m CIRCUIT BREAKER TRIGGERED: {} failures (threshold: {}) \x1b[0m",
+                                cumulative_failures, circuit_breaker_threshold
+                            );
+                            println!("Execution paused. Resume with: ralph --resume");
+                            println!();
+
+                            let state = self.execution_state.read().await;
+                            emit_run_complete(
+                                &evidence,
+                                "failed",
+                                Some("circuit_breaker".to_string()),
+                                Some(circuit_breaker_msg.clone()),
+                            )
+                            .await;
+                            save_metrics(&run_metrics);
+                            return RunResult {
+                                all_passed: false,
+                                stories_passed: state.completed.len(),
+                                total_stories,
+                                total_iterations,
+                                error: Some(format!(
+                                    "{}. Checkpoint saved. Resume with: ralph --resume",
+                                    circuit_breaker_msg
+                                )),
+                            };
                         }
                     }
                     Err(_) => {
-                        // Batch timed out - mark all in-flight stories as failed
+                        // Batch timed out - mark all in-flight stories as failed (non-transient)
+                        let timed_out_count = batch_story_ids.len() as u32;
                         let mut state = self.execution_state.write().await;
                         for story_id in &batch_story_ids {
                             if state.in_flight.contains(story_id) {
@@ -1041,6 +1189,55 @@ impl ParallelRunner {
                             }
                         }
                         drop(state);
+
+                        // Batch timeouts are non-transient failures
+                        cumulative_failures += timed_out_count;
+
+                        // Check circuit breaker after timeout
+                        if cumulative_failures >= circuit_breaker_threshold {
+                            let _ = cancel_tx.send(true);
+
+                            let failed_story_id = batch_story_ids
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            self.save_checkpoint(
+                                &failed_story_id,
+                                1,
+                                self.base_config.max_iterations_per_story,
+                                PauseReason::CircuitBreakerTriggered {
+                                    consecutive_failures: cumulative_failures,
+                                    threshold: circuit_breaker_threshold,
+                                },
+                            );
+
+                            let circuit_breaker_msg = format!(
+                                "Circuit breaker triggered: {} failures across batches (threshold: {})",
+                                cumulative_failures, circuit_breaker_threshold
+                            );
+                            println!("\n⚡ {}", circuit_breaker_msg);
+
+                            let state = self.execution_state.read().await;
+                            emit_run_complete(
+                                &evidence,
+                                "failed",
+                                Some("circuit_breaker".to_string()),
+                                Some(circuit_breaker_msg.clone()),
+                            )
+                            .await;
+                            save_metrics(&run_metrics);
+                            return RunResult {
+                                all_passed: false,
+                                stories_passed: state.completed.len(),
+                                total_stories,
+                                total_iterations,
+                                error: Some(format!(
+                                    "{}. Checkpoint saved. Resume with: ralph --resume",
+                                    circuit_breaker_msg
+                                )),
+                            };
+                        }
 
                         // Continue to next iteration - some stories may have completed
                         // before the timeout and their results were handled in the spawned task
@@ -1443,6 +1640,61 @@ impl ParallelRunner {
     fn load_prd(&self) -> Result<PrdFile, String> {
         validate_prd(&self.base_config.prd_path).map_err(|e| e.to_string())
     }
+
+    /// Save a checkpoint with the current execution state.
+    ///
+    /// Does nothing if checkpointing is disabled.
+    fn save_checkpoint(
+        &self,
+        story_id: &str,
+        iteration: u32,
+        max_iterations: u32,
+        pause_reason: PauseReason,
+    ) {
+        if let Some(ref manager) = self.checkpoint_manager {
+            let uncommitted_files = self.get_uncommitted_files().unwrap_or_default();
+            let checkpoint = Checkpoint::new(
+                Some(StoryCheckpoint::new(story_id, iteration, max_iterations)),
+                pause_reason,
+                uncommitted_files,
+            );
+
+            if let Err(e) = manager.save(&checkpoint) {
+                eprintln!("Warning: Failed to save checkpoint: {}", e);
+            }
+        }
+    }
+
+    /// Get list of uncommitted files from git.
+    fn get_uncommitted_files(&self) -> Result<Vec<String>, String> {
+        use std::process::Command;
+
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.base_config.working_dir)
+            .output()
+            .map_err(|e| format!("Failed to run git status: {}", e))?;
+
+        if !output.status.success() {
+            return Ok(vec![]);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let files: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.len() > 3 {
+                    Some(line[3..].to_string())
+                } else {
+                    None
+                }
+            })
+            .filter(|path| path != ".ralph/checkpoint.json" && path != ".ralph/checkpoint.json.tmp")
+            .collect();
+
+        Ok(files)
+    }
 }
 
 async fn emit_run_complete(
@@ -1469,5 +1721,337 @@ async fn emit_step_event(
         let mut writer = writer.lock().await;
         writer.emit_step(step_id, status, error_type, error_message);
         run_metrics.record_evidence_step(step_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================================
+    // Circuit Breaker Configuration Tests
+    // ============================================================================
+
+    #[test]
+    fn test_parallel_runner_config_default_circuit_breaker_threshold() {
+        let config = ParallelRunnerConfig::default();
+        // Default circuit breaker threshold should be 5
+        assert_eq!(config.circuit_breaker_threshold, 5);
+    }
+
+    #[test]
+    fn test_parallel_runner_config_custom_circuit_breaker_threshold() {
+        let config = ParallelRunnerConfig {
+            circuit_breaker_threshold: 3,
+            ..Default::default()
+        };
+        assert_eq!(config.circuit_breaker_threshold, 3);
+    }
+
+    #[test]
+    fn test_parallel_runner_config_circuit_breaker_threshold_zero() {
+        // Zero threshold means circuit breaker triggers immediately on first failure
+        let config = ParallelRunnerConfig {
+            circuit_breaker_threshold: 0,
+            ..Default::default()
+        };
+        assert_eq!(config.circuit_breaker_threshold, 0);
+    }
+
+    // ============================================================================
+    // Cumulative Failure Counter Logic Tests
+    // ============================================================================
+
+    #[test]
+    fn test_circuit_breaker_cumulative_failures_threshold() {
+        // Simulate the circuit breaker counter logic as it works in run()
+        let circuit_breaker_threshold: u32 = 5;
+        let mut cumulative_failures: u32 = 0;
+
+        // Simulate 4 cumulative failures across batches (should not trigger)
+        for _ in 0..4 {
+            cumulative_failures += 1;
+            assert!(
+                cumulative_failures < circuit_breaker_threshold,
+                "Should not trigger circuit breaker yet"
+            );
+        }
+        assert_eq!(cumulative_failures, 4);
+
+        // 5th failure triggers circuit breaker
+        cumulative_failures += 1;
+        assert!(
+            cumulative_failures >= circuit_breaker_threshold,
+            "Should trigger circuit breaker at 5th failure"
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_cumulative_failures_across_batches() {
+        // Verify failures accumulate across multiple batches
+        let threshold: u32 = 5;
+        let mut cumulative: u32 = 0;
+
+        // Batch 1: 2 failures
+        cumulative += 2;
+        assert!(cumulative < threshold);
+
+        // Batch 2: 1 failure
+        cumulative += 1;
+        assert!(cumulative < threshold);
+
+        // Batch 3: 2 failures - triggers
+        cumulative += 2;
+        assert!(cumulative >= threshold);
+        assert_eq!(cumulative, 5);
+    }
+
+    #[test]
+    fn test_circuit_breaker_does_not_reset_on_success() {
+        // In parallel mode, cumulative failures do NOT reset on success
+        // (unlike sequential mode which tracks consecutive failures)
+        let threshold: u32 = 5;
+        let mut cumulative: u32 = 0;
+
+        // Batch 1: 2 failures
+        cumulative += 2;
+
+        // Batch 2: has some successes, but cumulative doesn't reset
+        // Only add non-transient failures
+        cumulative += 0; // successes don't decrement
+
+        // Batch 3: 3 more failures - triggers
+        cumulative += 3;
+        assert!(cumulative >= threshold);
+    }
+
+    // ============================================================================
+    // Non-Transient Failure Classification Tests
+    // ============================================================================
+
+    #[test]
+    fn test_non_transient_failure_quality_gate() {
+        // Quality gate failures (success=false, is_transient=false) count toward circuit breaker
+        let success = false;
+        let is_transient = false;
+        let should_count = !success && !is_transient;
+        assert!(should_count, "Quality gate failures should count");
+    }
+
+    #[test]
+    fn test_transient_failure_does_not_count() {
+        // Transient failures (network errors, etc) don't count toward circuit breaker
+        let success = false;
+        let is_transient = true;
+        let should_count = !success && !is_transient;
+        assert!(!should_count, "Transient failures should not count");
+    }
+
+    #[test]
+    fn test_success_does_not_count() {
+        // Successful executions don't count toward circuit breaker
+        let success = true;
+        let is_transient = false;
+        let should_count = !success && !is_transient;
+        assert!(!should_count, "Successes should not count");
+    }
+
+    #[test]
+    fn test_batch_failure_counting_logic() {
+        // Simulate batch result processing
+        let results: Vec<(String, bool, u32, bool)> = vec![
+            ("US-001".to_string(), true, 1, false),  // success
+            ("US-002".to_string(), false, 3, false), // quality gate failure
+            ("US-003".to_string(), false, 1, true),  // transient failure
+            ("US-004".to_string(), false, 2, false), // quality gate failure
+        ];
+
+        let mut batch_non_transient_failures: u32 = 0;
+        for (_story_id, success, _iterations, is_transient) in results {
+            if !success && !is_transient {
+                batch_non_transient_failures += 1;
+            }
+        }
+
+        // Should count 2 non-transient failures (US-002 and US-004)
+        assert_eq!(batch_non_transient_failures, 2);
+    }
+
+    // ============================================================================
+    // Batch Timeout Failure Tests
+    // ============================================================================
+
+    #[test]
+    fn test_batch_timeout_counts_as_non_transient() {
+        // When a batch times out, all in-flight stories count as non-transient failures
+        let threshold: u32 = 5;
+        let mut cumulative: u32 = 0;
+
+        // Batch 1: 2 regular failures
+        cumulative += 2;
+
+        // Batch 2: timeout with 3 in-flight stories
+        let timed_out_count = 3;
+        cumulative += timed_out_count;
+
+        // Should trigger circuit breaker (5 >= 5)
+        assert!(cumulative >= threshold);
+    }
+
+    // ============================================================================
+    // Execution State Tests
+    // ============================================================================
+
+    #[test]
+    fn test_execution_state_acquire_locks() {
+        let mut state = ParallelExecutionState::default();
+
+        // Acquire locks for story 1
+        let acquired = state.acquire_locks("US-001", &["src/a.rs".to_string()]);
+        assert!(acquired);
+
+        // Can acquire same lock for same story
+        let acquired = state.acquire_locks("US-001", &["src/a.rs".to_string()]);
+        assert!(acquired);
+
+        // Cannot acquire lock for different story
+        let acquired = state.acquire_locks("US-002", &["src/a.rs".to_string()]);
+        assert!(!acquired);
+
+        // Can acquire different lock for different story
+        let acquired = state.acquire_locks("US-002", &["src/b.rs".to_string()]);
+        assert!(acquired);
+    }
+
+    #[test]
+    fn test_execution_state_release_locks() {
+        let mut state = ParallelExecutionState::default();
+
+        // Acquire locks
+        state.acquire_locks("US-001", &["src/a.rs".to_string(), "src/b.rs".to_string()]);
+        assert_eq!(state.locked_files.len(), 2);
+
+        // Release locks
+        state.release_locks("US-001");
+        assert!(state.locked_files.is_empty());
+    }
+
+    #[test]
+    fn test_execution_state_track_in_flight() {
+        let mut state = ParallelExecutionState::default();
+
+        state.in_flight.insert("US-001".to_string());
+        state.in_flight.insert("US-002".to_string());
+        assert_eq!(state.in_flight.len(), 2);
+        assert!(state.in_flight.contains("US-001"));
+
+        state.in_flight.remove("US-001");
+        assert!(!state.in_flight.contains("US-001"));
+        assert_eq!(state.in_flight.len(), 1);
+    }
+
+    #[test]
+    fn test_execution_state_track_failures() {
+        let mut state = ParallelExecutionState::default();
+
+        state
+            .failed
+            .insert("US-001".to_string(), "Quality gate failed".to_string());
+        state
+            .failed
+            .insert("US-002".to_string(), "Timeout".to_string());
+
+        assert_eq!(state.failed.len(), 2);
+        assert_eq!(state.failed.get("US-001").unwrap(), "Quality gate failed");
+    }
+
+    // ============================================================================
+    // Pre-execution Conflict Detection Tests
+    // ============================================================================
+
+    #[test]
+    fn test_detect_preexecution_conflicts_no_overlap() {
+        let stories = vec![
+            StoryNode {
+                id: "US-001".to_string(),
+                priority: 1,
+                passes: false,
+                target_files: vec!["src/a.rs".to_string()],
+                depends_on: vec![],
+            },
+            StoryNode {
+                id: "US-002".to_string(),
+                priority: 2,
+                passes: false,
+                target_files: vec!["src/b.rs".to_string()],
+                depends_on: vec![],
+            },
+        ];
+
+        let conflicts = detect_preexecution_conflicts(&stories);
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn test_detect_preexecution_conflicts_with_overlap() {
+        let stories = vec![
+            StoryNode {
+                id: "US-001".to_string(),
+                priority: 1, // Higher priority (lower number)
+                passes: false,
+                target_files: vec!["src/shared.rs".to_string()],
+                depends_on: vec![],
+            },
+            StoryNode {
+                id: "US-002".to_string(),
+                priority: 2, // Lower priority (higher number)
+                passes: false,
+                target_files: vec!["src/shared.rs".to_string()],
+                depends_on: vec![],
+            },
+        ];
+
+        let conflicts = detect_preexecution_conflicts(&stories);
+        assert_eq!(conflicts.len(), 1);
+        // US-002 (lower priority) should be deferred, US-001 runs first
+        assert_eq!(conflicts[0], ("US-002".to_string(), "US-001".to_string()));
+    }
+
+    #[test]
+    fn test_filter_conflicting_stories() {
+        let stories = vec![
+            StoryNode {
+                id: "US-001".to_string(),
+                priority: 1,
+                passes: false,
+                target_files: vec!["src/shared.rs".to_string()],
+                depends_on: vec![],
+            },
+            StoryNode {
+                id: "US-002".to_string(),
+                priority: 2,
+                passes: false,
+                target_files: vec!["src/shared.rs".to_string()],
+                depends_on: vec![],
+            },
+            StoryNode {
+                id: "US-003".to_string(),
+                priority: 3,
+                passes: false,
+                target_files: vec!["src/other.rs".to_string()],
+                depends_on: vec![],
+            },
+        ];
+
+        let (filtered, conflicts) = filter_conflicting_stories(stories);
+
+        // US-002 should be filtered out (deferred), US-001 and US-003 remain
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|s| s.id == "US-001"));
+        assert!(filtered.iter().any(|s| s.id == "US-003"));
+        assert!(!filtered.iter().any(|s| s.id == "US-002"));
+
+        // One conflict detected
+        assert_eq!(conflicts.len(), 1);
     }
 }

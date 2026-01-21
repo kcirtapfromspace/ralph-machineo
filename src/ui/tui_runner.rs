@@ -8,12 +8,17 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::ui::display::DisplayOptions;
+use std::sync::Mutex;
+
+use crate::ui::display::{DisplayCallback, DisplayOptions, LastActivityInfo, SharedActivityState};
 use crate::ui::keyboard::{render_compact_hint, KeyboardListener, ToggleState};
 use crate::ui::tui::{
     AnimationState, CompletionSummaryWidget, GateChainWidget, GateInfo, GateStatus, GitSummary,
     IterationWidget, StoryHeaderWidget, StoryProgressWidget, StoryState,
 };
+
+/// Re-export LastActivityInfo as LastActivity for backward compatibility.
+pub type LastActivity = LastActivityInfo;
 
 /// A TUI-based display for the runner loop.
 pub struct TuiRunnerDisplay {
@@ -45,6 +50,12 @@ pub struct TuiRunnerDisplay {
     display_options: DisplayOptions,
     /// Live toggle state (shared with keyboard listener)
     toggle_state: Arc<ToggleState>,
+    /// Last activity from the agent (shared with streaming callback)
+    shared_activity: Option<SharedActivityState>,
+    /// When the current iteration started
+    iteration_start: Mutex<Option<Instant>>,
+    /// Circuit breaker state: current failures and threshold
+    circuit_breaker_state: Mutex<Option<(u32, u32)>>,
 }
 
 impl Default for TuiRunnerDisplay {
@@ -73,6 +84,9 @@ impl TuiRunnerDisplay {
             quiet: false,
             display_options: DisplayOptions::default(),
             toggle_state,
+            shared_activity: None,
+            iteration_start: Mutex::new(None),
+            circuit_breaker_state: Mutex::new(None),
         }
     }
 
@@ -98,7 +112,128 @@ impl TuiRunnerDisplay {
             quiet: options.quiet,
             display_options: options,
             toggle_state,
+            shared_activity: None,
+            iteration_start: Mutex::new(None),
+            circuit_breaker_state: Mutex::new(None),
         }
+    }
+
+    /// Set the shared activity state for displaying last activity.
+    ///
+    /// Call this after creating the display and the streaming callback,
+    /// passing the callback's shared activity state.
+    pub fn with_shared_activity(mut self, activity: SharedActivityState) -> Self {
+        self.shared_activity = Some(activity);
+        self
+    }
+
+    /// Set the shared activity state (mutable reference version).
+    pub fn set_shared_activity(&mut self, activity: SharedActivityState) {
+        self.shared_activity = Some(activity);
+    }
+
+    /// Get the last activity, if any.
+    pub fn get_last_activity(&self) -> Option<LastActivity> {
+        self.shared_activity.as_ref()?.lock().ok()?.clone()
+    }
+
+    /// Get elapsed time since iteration started.
+    pub fn get_iteration_elapsed(&self) -> Option<Duration> {
+        self.iteration_start
+            .lock()
+            .ok()?
+            .map(|start| start.elapsed())
+    }
+
+    /// Update the circuit breaker status.
+    pub fn update_circuit_breaker(&self, current_failures: u32, threshold: u32) {
+        if let Ok(mut state) = self.circuit_breaker_state.lock() {
+            *state = Some((current_failures, threshold));
+        }
+    }
+
+    /// Reset the circuit breaker counter (called on story success).
+    pub fn reset_circuit_breaker(&self) {
+        if let Ok(mut state) = self.circuit_breaker_state.lock() {
+            if let Some((_, threshold)) = *state {
+                *state = Some((0, threshold));
+            }
+        }
+    }
+
+    /// Render the circuit breaker status string with appropriate coloring.
+    ///
+    /// Returns "Failures: N/T" with colors:
+    /// - Normal (muted) when N < 60% of T
+    /// - Yellow (warning) when N >= 60% of T (3/5)
+    /// - Red (error) when N >= 80% of T (4/5)
+    fn render_circuit_breaker_status(&self) -> Option<String> {
+        let state = self.circuit_breaker_state.lock().ok()?;
+        let (current, threshold) = (*state)?;
+
+        // Only show if threshold > 0 to avoid division by zero
+        if threshold == 0 {
+            return None;
+        }
+
+        let percentage = (current as f64 / threshold as f64) * 100.0;
+        let status_text = format!("Failures: {}/{}", current, threshold);
+
+        if !self.use_colors {
+            return Some(status_text);
+        }
+
+        // Color coding based on percentage:
+        // - >= 80% (4/5): Red (error)
+        // - >= 60% (3/5): Yellow (warning)
+        // - < 60%: Gray (muted)
+        let colored = if percentage >= 80.0 {
+            // Red - critical threshold approaching
+            format!("\x1b[38;2;239;68;68m{}\x1b[0m", status_text)
+        } else if percentage >= 60.0 {
+            // Yellow - warning threshold
+            format!("\x1b[38;2;234;179;8m{}\x1b[0m", status_text)
+        } else {
+            // Gray - normal
+            format!("\x1b[38;2;107;114;128m{}\x1b[0m", status_text)
+        };
+
+        Some(colored)
+    }
+
+    /// Display a clear notification when circuit breaker triggers.
+    pub fn display_circuit_breaker_triggered(&self, failures: u32, threshold: u32) {
+        if self.quiet {
+            return;
+        }
+
+        println!();
+        let message = format!(
+            "CIRCUIT BREAKER TRIGGERED: {} consecutive failures (threshold: {})",
+            failures, threshold
+        );
+
+        if self.use_colors {
+            // Red background with white text for maximum visibility
+            println!(
+                "\x1b[48;2;239;68;68m\x1b[38;2;255;255;255m {} \x1b[0m",
+                message
+            );
+        } else {
+            println!("*** {} ***", message);
+        }
+
+        println!("Execution paused. Resume with: ralph --resume");
+        println!();
+    }
+
+    /// Redraw the iteration status line after streaming output.
+    fn redraw_iteration_status(&self) {
+        let iter_widget = IterationWidget::new(self.current_iteration, self.max_iterations)
+            .with_gates(self.gates.clone())
+            .with_animation(self.animation.clone());
+        print!("  {}", iter_widget.render_string());
+        io::stdout().flush().ok();
     }
 
     /// Set quiet mode.
@@ -238,12 +373,75 @@ impl TuiRunnerDisplay {
         self.max_iterations = max;
         self.animation.tick();
 
-        // Clear previous line and render new iteration
-        print!("\r\x1b[K");
+        // Clear previous lines (iteration line and optional activity line)
+        // Move up one line if we might have an activity line, then clear both
+        print!("\x1b[1A\r\x1b[K\x1b[1B\r\x1b[K\x1b[1A"); // Up, clear, down, clear, up
+
+        // Render iteration widget
         let iter_widget = IterationWidget::new(iteration, max)
             .with_gates(self.gates.clone())
             .with_animation(self.animation.clone());
-        print!("  {}", iter_widget.render_string());
+
+        // Build the elapsed time string
+        let elapsed_str = if let Some(elapsed) = self.get_iteration_elapsed() {
+            let secs = elapsed.as_secs();
+            if secs >= 60 {
+                format!(" {}m {}s", secs / 60, secs % 60)
+            } else {
+                format!(" {}s", secs)
+            }
+        } else {
+            String::new()
+        };
+
+        // Build circuit breaker status string if available
+        let cb_status_str = self
+            .render_circuit_breaker_status()
+            .map(|s| format!(" | {}", s))
+            .unwrap_or_default();
+
+        print!(
+            "  {}{}{}",
+            iter_widget.render_string(),
+            self.style_dim(&elapsed_str),
+            cb_status_str
+        );
+
+        // Render last activity indicator on a new line if available
+        if let Some(activity) = self.get_last_activity() {
+            let time_ago = activity.timestamp.elapsed();
+            let time_str = if time_ago.as_secs() >= 60 {
+                format!(
+                    "{}m {}s ago",
+                    time_ago.as_secs() / 60,
+                    time_ago.as_secs() % 60
+                )
+            } else {
+                format!("{}s ago", time_ago.as_secs())
+            };
+
+            // Truncate activity description to fit terminal width
+            let max_desc_len = self.term_width.saturating_sub(20); // Leave room for prefix and time
+            let desc = if activity.description.len() > max_desc_len {
+                format!(
+                    "{}...",
+                    &activity.description[..max_desc_len.saturating_sub(3)]
+                )
+            } else {
+                activity.description.clone()
+            };
+
+            println!();
+            print!(
+                "  {}",
+                self.style_dim(&format!("└── {} ({})", desc, time_str))
+            );
+        } else {
+            // Print empty activity line placeholder
+            println!();
+            print!("  {}", self.style_dim("└── Waiting for agent output..."));
+        }
+
         io::stdout().flush().ok();
     }
 
@@ -448,3 +646,167 @@ fn terminal_width() -> usize {
         80
     }
 }
+
+/// Parse agent output line to extract a human-readable activity description.
+///
+/// Returns an icon and description if a recognizable pattern is found.
+fn parse_activity_from_line(line: &str) -> Option<(char, String)> {
+    let line_lower = line.to_lowercase();
+
+    // File reading patterns
+    if line_lower.contains("reading") || line_lower.contains("read ") {
+        // Try to extract filename
+        if let Some(path) = extract_path_from_line(line) {
+            return Some(('\u{1F4D6}', format!("Reading {}", path))); // 📖
+        }
+        return Some(('\u{1F4D6}', "Reading file...".to_string()));
+    }
+
+    // File writing patterns
+    if line_lower.contains("writing")
+        || line_lower.contains("write ")
+        || line_lower.contains("edit ")
+        || line_lower.contains("created ")
+        || line_lower.contains("updated ")
+    {
+        if let Some(path) = extract_path_from_line(line) {
+            return Some(('\u{270F}', format!("Writing {}", path))); // ✏️
+        }
+        return Some(('\u{270F}', "Writing file...".to_string()));
+    }
+
+    // Command execution patterns
+    if line_lower.contains("running")
+        || line_lower.contains("executing")
+        || line_lower.starts_with("$ ")
+        || line_lower.contains("cargo ")
+        || line_lower.contains("npm ")
+        || line_lower.contains("git ")
+    {
+        let cmd = line.trim_start_matches("$ ").trim();
+        let short_cmd = if cmd.len() > 40 {
+            format!("{}...", &cmd[..37])
+        } else {
+            cmd.to_string()
+        };
+        return Some(('\u{1F527}', format!("Running: {}", short_cmd))); // 🔧
+    }
+
+    // Thinking/analysis patterns
+    if line_lower.contains("thinking")
+        || line_lower.contains("analyzing")
+        || line_lower.contains("planning")
+        || line_lower.contains("considering")
+    {
+        return Some(('\u{1F9E0}', "Analyzing...".to_string())); // 🧠
+    }
+
+    None
+}
+
+/// Extract a file path from a line of output.
+fn extract_path_from_line(line: &str) -> Option<String> {
+    // Common patterns: "Reading file: path", "Read path", etc.
+    let patterns = ["file:", "file ", ": "];
+    for pattern in &patterns {
+        if let Some(idx) = line.to_lowercase().find(pattern) {
+            let after = &line[idx + pattern.len()..];
+            let path = after.split_whitespace().next()?;
+            // Clean up path (remove quotes, trailing punctuation)
+            let path = path.trim_matches(|c| c == '"' || c == '\'' || c == ',' || c == '.');
+            if !path.is_empty() && (path.contains('/') || path.contains('.')) {
+                // Shorten long paths
+                let display_path = if path.len() > 50 {
+                    format!("...{}", &path[path.len() - 47..])
+                } else {
+                    path.to_string()
+                };
+                return Some(display_path);
+            }
+        }
+    }
+    None
+}
+
+impl DisplayCallback for TuiRunnerDisplay {
+    fn on_agent_output(&self, line: &str, is_stderr: bool) {
+        // Skip if quiet mode
+        if self.quiet {
+            return;
+        }
+
+        // Update shared activity if available
+        if let Some(ref shared) = self.shared_activity {
+            if let Some((icon, description)) = parse_activity_from_line(line) {
+                if let Ok(mut activity) = shared.lock() {
+                    *activity = Some(LastActivity {
+                        timestamp: Instant::now(),
+                        description: format!("{} {}", icon, description),
+                        is_stderr,
+                    });
+                }
+            } else {
+                // Still update timestamp even without a parsed description
+                if let Ok(mut activity) = shared.lock() {
+                    let desc = if line.len() > 60 {
+                        format!("{}...", &line[..57])
+                    } else {
+                        line.to_string()
+                    };
+                    *activity = Some(LastActivity {
+                        timestamp: Instant::now(),
+                        description: desc,
+                        is_stderr,
+                    });
+                }
+            }
+        }
+
+        // Stream output to terminal if streaming is enabled
+        if self.should_show_streaming() {
+            // Clear current line and print output with prefix
+            print!("\r\x1b[K"); // Clear line
+                                // Use dim prefix for both stdout/stderr; could differentiate later
+            let _ = is_stderr; // Reserved for future stderr styling
+            let prefix = self.style_dim("  │ ");
+            println!("{}{}", prefix, line);
+            // Redraw iteration status
+            self.redraw_iteration_status();
+        }
+    }
+
+    fn on_agent_started(&self, story_id: &str, iteration: u32) {
+        // Reset iteration timer
+        if let Ok(mut start) = self.iteration_start.lock() {
+            *start = Some(Instant::now());
+        }
+        // Clear shared activity if available
+        if let Some(ref shared) = self.shared_activity {
+            if let Ok(mut activity) = shared.lock() {
+                *activity = None;
+            }
+        }
+
+        if !self.quiet && self.display_options.verbosity >= 1 {
+            eprintln!(
+                "{}",
+                self.style_dim(&format!(
+                    "  [Agent started: {} iteration {}]",
+                    story_id, iteration
+                ))
+            );
+        }
+    }
+
+    fn on_agent_completed(&self, story_id: &str, success: bool) {
+        if !self.quiet && self.display_options.verbosity >= 1 {
+            let status = if success { "completed" } else { "failed" };
+            eprintln!(
+                "{}",
+                self.style_dim(&format!("  [Agent {}: {}]", status, story_id))
+            );
+        }
+    }
+}
+
+// Helper methods for DisplayCallback impl are defined in the main impl block above

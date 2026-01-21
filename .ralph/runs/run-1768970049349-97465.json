@@ -1,0 +1,183 @@
+{
+  "run_id": "run-1768970049349-97465",
+  "started_at": {
+    "secs_since_epoch": 1768970049,
+    "nanos_since_epoch": 349181000
+  },
+  "completed_at": {
+    "secs_since_epoch": 1768971795,
+    "nanos_since_epoch": 737909000
+  },
+  "recorded_at": {
+    "secs_since_epoch": 1768971795,
+    "nanos_since_epoch": 737909000
+  },
+  "run_duration": {
+    "secs": 1746,
+    "nanos": 389474834
+  },
+  "expected_steps": 15,
+  "steps_attempted": 7,
+  "steps_completed": 6,
+  "failures": 1,
+  "retries": 0,
+  "completeness_percent": 46.666666666666664,
+  "step_durations": {
+    "US-005": {
+      "secs": 300,
+      "nanos": 303859167
+    },
+    "US-007": {
+      "secs": 345,
+      "nanos": 88030042
+    },
+    "US-004": {
+      "secs": 300,
+      "nanos": 281620958
+    },
+    "US-006": {
+      "secs": 300,
+      "nanos": 299886917
+    },
+    "US-003": {
+      "secs": 165,
+      "nanos": 272202250
+    },
+    "US-002": {
+      "secs": 165,
+      "nanos": 286795084
+    },
+    "US-001": {
+      "secs": 166,
+      "nanos": 49927791
+    }
+  },
+  "steps": [
+    {
+      "step_id": "US-003",
+      "attempts": 1,
+      "duration": {
+        "secs": 165,
+        "nanos": 272202250
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768970384,
+        "nanos_since_epoch": 466546000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768970549,
+        "nanos_since_epoch": 738582000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-006",
+      "attempts": 1,
+      "duration": {
+        "secs": 300,
+        "nanos": 299886917
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768971150,
+        "nanos_since_epoch": 324271000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768971450,
+        "nanos_since_epoch": 624064000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-002",
+      "attempts": 1,
+      "duration": {
+        "secs": 165,
+        "nanos": 286795084
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768970219,
+        "nanos_since_epoch": 179530000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768970384,
+        "nanos_since_epoch": 466283000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-001",
+      "attempts": 1,
+      "duration": {
+        "secs": 166,
+        "nanos": 49927791
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768970053,
+        "nanos_since_epoch": 129467000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768970219,
+        "nanos_since_epoch": 179352000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-005",
+      "attempts": 1,
+      "duration": {
+        "secs": 300,
+        "nanos": 303859167
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768970850,
+        "nanos_since_epoch": 20308000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768971150,
+        "nanos_since_epoch": 324073000
+      },
+      "error": null
+    },
+    {
+      "step_id": "US-007",
+      "attempts": 1,
+      "duration": {
+        "secs": 345,
+        "nanos": 88030042
+      },
+      "success": false,
+      "started_at": {
+        "secs_since_epoch": 1768971450,
+        "nanos_since_epoch": 624202000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768971795,
+        "nanos_since_epoch": 712102000
+      },
+      "error": "Execution timed out: Agent 'claude' stalled (no output for 180s) (iteration 1)"
+    },
+    {
+      "step_id": "US-004",
+      "attempts": 1,
+      "duration": {
+        "secs": 300,
+        "nanos": 281620958
+      },
+      "success": true,
+      "started_at": {
+        "secs_since_epoch": 1768970549,
+        "nanos_since_epoch": 738715000
+      },
+      "completed_at": {
+        "secs_since_epoch": 1768970850,
+        "nanos_since_epoch": 20169000
+      },
+      "error": null
+    }
+  ]
+}
