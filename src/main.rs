@@ -146,6 +146,11 @@ struct Cli {
     #[arg(long)]
     no_checkpoint: bool,
 
+    /// Number of consecutive failures before circuit breaker triggers.
+    /// When reached, execution pauses to prevent cascading failures. (default: 5)
+    #[arg(long, value_name = "COUNT")]
+    circuit_breaker_threshold: Option<u32>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -219,6 +224,11 @@ enum Commands {
         /// Disable checkpointing
         #[arg(long)]
         no_checkpoint: bool,
+
+        /// Number of consecutive failures before circuit breaker triggers.
+        /// When reached, execution pauses to prevent cascading failures. (default: 5)
+        #[arg(long, value_name = "COUNT")]
+        circuit_breaker_threshold: Option<u32>,
 
         /// Print help information
         #[arg(long, short)]
@@ -375,6 +385,9 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 "  --startup-grace-period <SECONDS>  Initial startup grace period [default: 120]"
             );
             println!("  --no-checkpoint          Disable checkpointing");
+            println!(
+                "  --circuit-breaker-threshold <COUNT>  Failures before circuit breaker [default: 5]"
+            );
             println!("  --agent <CMD>            Agent command (claude, codex, amp, or custom)");
             println!("  -h, --help               Print help information");
             return Ok(ExitCode::SUCCESS);
@@ -395,6 +408,7 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             heartbeat_threshold,
             startup_grace_period,
             no_checkpoint,
+            circuit_breaker_threshold,
             help: false,
         }) => {
             run_stories(
@@ -413,6 +427,7 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 heartbeat_threshold,
                 startup_grace_period,
                 no_checkpoint,
+                circuit_breaker_threshold,
                 agent.clone(),
             )
             .await?;
@@ -557,6 +572,7 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cli.heartbeat_threshold,
                     cli.startup_grace_period,
                     cli.no_checkpoint,
+                    cli.circuit_breaker_threshold,
                     cli.agent.clone(),
                 )
                 .await?;
@@ -616,6 +632,7 @@ async fn run_stories(
     heartbeat_threshold: Option<u32>,
     startup_grace_period: Option<u64>,
     no_checkpoint: bool,
+    circuit_breaker_threshold: Option<u32>,
     agent: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ralphmacchio::mcp::tools::executor::detect_agent;
@@ -649,6 +666,7 @@ async fn run_stories(
         },
         queue_capacity: env_queue_capacity.unwrap_or(parallel_queue_capacity).max(1),
         queue_policy,
+        circuit_breaker_threshold: circuit_breaker_threshold.unwrap_or(5),
         ..Default::default()
     };
 
@@ -684,6 +702,7 @@ async fn run_stories(
         heartbeat_threshold,
         startup_grace_period_seconds: startup_grace_period,
         no_checkpoint,
+        circuit_breaker_threshold,
     };
 
     let runner = Runner::new(config);
