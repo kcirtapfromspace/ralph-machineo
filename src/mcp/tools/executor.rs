@@ -60,6 +60,8 @@ pub enum ExecutorError {
     PrdError(String),
     /// Git operation failed
     GitError(String),
+    /// Git operation timed out
+    GitTimeout(String),
     /// Quality gates failed
     QualityGateFailed(String),
     /// Agent execution failed
@@ -78,6 +80,7 @@ impl std::fmt::Display for ExecutorError {
             ExecutorError::StoryNotFound(id) => write!(f, "Story not found: {}", id),
             ExecutorError::PrdError(msg) => write!(f, "PRD error: {}", msg),
             ExecutorError::GitError(msg) => write!(f, "Git error: {}", msg),
+            ExecutorError::GitTimeout(msg) => write!(f, "Git operation timed out: {}", msg),
             ExecutorError::QualityGateFailed(msg) => write!(f, "Quality gate failed: {}", msg),
             ExecutorError::AgentError(msg) => write!(f, "Agent execution error: {}", msg),
             ExecutorError::Cancelled => write!(f, "Execution was cancelled"),
@@ -96,6 +99,7 @@ impl ExecutorError {
 
         match self {
             ExecutorError::Timeout(_) => ErrorCategory::Timeout(TimeoutReason::ProcessTimeout),
+            ExecutorError::GitTimeout(_) => ErrorCategory::Timeout(TimeoutReason::ProcessTimeout),
             ExecutorError::Cancelled => ErrorCategory::Fatal(FatalReason::InternalError),
             ExecutorError::StoryNotFound(_) => ErrorCategory::Fatal(FatalReason::ResourceNotFound),
             ExecutorError::PrdError(_) => ErrorCategory::Fatal(FatalReason::ConfigurationError),
@@ -1111,54 +1115,179 @@ impl StoryExecutor {
     /// If a git_mutex is configured, this method will acquire the lock before
     /// performing git operations to prevent concurrent git operations that could
     /// corrupt the repository.
+    ///
+    /// All git operations are wrapped with timeout from `ExecutorConfig.timeout_config.git_timeout`.
     async fn create_commit(&self, story: &PrdUserStory) -> Result<String, ExecutorError> {
-        // Acquire git mutex if configured (for parallel execution)
+        let git_timeout = self.config.timeout_config.git_timeout;
+        let story_id = story.id.clone();
+
+        // Acquire git mutex if configured (for parallel execution), with timeout
         let _guard = if let Some(ref mutex) = self.config.git_mutex {
-            Some(mutex.lock().await)
+            match tokio::time::timeout(git_timeout, mutex.lock()).await {
+                Ok(guard) => Some(guard),
+                Err(_) => {
+                    // Timeout acquiring mutex - save checkpoint before returning error
+                    self.save_git_timeout_checkpoint(&story_id, "mutex acquisition");
+                    return Err(ExecutorError::GitTimeout(format!(
+                        "Timed out after {:?} waiting for git mutex",
+                        git_timeout
+                    )));
+                }
+            }
         } else {
             None
         };
 
-        // Stage all changes
-        let status = Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&self.config.project_root)
-            .status()
-            .map_err(|e| ExecutorError::GitError(format!("Failed to stage changes: {}", e)))?;
+        // Stage all changes with timeout
+        let project_root = self.config.project_root.clone();
+        let add_result = tokio::time::timeout(git_timeout, async {
+            tokio::task::spawn_blocking(move || {
+                Command::new("git")
+                    .args(["add", "-A"])
+                    .current_dir(&project_root)
+                    .status()
+            })
+            .await
+        })
+        .await;
 
-        if !status.success() {
-            return Err(ExecutorError::GitError("git add failed".to_string()));
+        match add_result {
+            Ok(Ok(Ok(status))) => {
+                if !status.success() {
+                    return Err(ExecutorError::GitError("git add failed".to_string()));
+                }
+            }
+            Ok(Ok(Err(e))) => {
+                return Err(ExecutorError::GitError(format!(
+                    "Failed to stage changes: {}",
+                    e
+                )));
+            }
+            Ok(Err(e)) => {
+                return Err(ExecutorError::GitError(format!(
+                    "Git add task failed: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                self.save_git_timeout_checkpoint(&story_id, "git add");
+                return Err(ExecutorError::GitTimeout(format!(
+                    "git add timed out after {:?}",
+                    git_timeout
+                )));
+            }
         }
 
         // Create commit with proper message format: feat: [ID] - [Title]
         let commit_message = format!("feat: {} - {}", story.id, story.title);
+        let project_root = self.config.project_root.clone();
+        let commit_result = tokio::time::timeout(git_timeout, async {
+            tokio::task::spawn_blocking(move || {
+                Command::new("git")
+                    .args(["commit", "-m", &commit_message])
+                    .current_dir(&project_root)
+                    .status()
+            })
+            .await
+        })
+        .await;
 
-        let status = Command::new("git")
-            .args(["commit", "-m", &commit_message])
-            .current_dir(&self.config.project_root)
-            .status()
-            .map_err(|e| ExecutorError::GitError(format!("Failed to create commit: {}", e)))?;
-
-        if !status.success() {
-            return Err(ExecutorError::GitError("git commit failed".to_string()));
+        match commit_result {
+            Ok(Ok(Ok(status))) => {
+                if !status.success() {
+                    return Err(ExecutorError::GitError("git commit failed".to_string()));
+                }
+            }
+            Ok(Ok(Err(e))) => {
+                return Err(ExecutorError::GitError(format!(
+                    "Failed to create commit: {}",
+                    e
+                )));
+            }
+            Ok(Err(e)) => {
+                return Err(ExecutorError::GitError(format!(
+                    "Git commit task failed: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                self.save_git_timeout_checkpoint(&story_id, "git commit");
+                return Err(ExecutorError::GitTimeout(format!(
+                    "git commit timed out after {:?}",
+                    git_timeout
+                )));
+            }
         }
 
-        // Get the commit hash
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&self.config.project_root)
-            .output()
-            .map_err(|e| ExecutorError::GitError(format!("Failed to get commit hash: {}", e)))?;
+        // Get the commit hash with timeout
+        let project_root = self.config.project_root.clone();
+        let hash_result = tokio::time::timeout(git_timeout, async {
+            tokio::task::spawn_blocking(move || {
+                Command::new("git")
+                    .args(["rev-parse", "HEAD"])
+                    .current_dir(&project_root)
+                    .output()
+            })
+            .await
+        })
+        .await;
 
-        if !output.status.success() {
-            return Err(ExecutorError::GitError(
-                "Failed to get commit hash".to_string(),
-            ));
+        match hash_result {
+            Ok(Ok(Ok(output))) => {
+                if !output.status.success() {
+                    return Err(ExecutorError::GitError(
+                        "Failed to get commit hash".to_string(),
+                    ));
+                }
+                let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                Ok(hash)
+            }
+            Ok(Ok(Err(e))) => Err(ExecutorError::GitError(format!(
+                "Failed to get commit hash: {}",
+                e
+            ))),
+            Ok(Err(e)) => Err(ExecutorError::GitError(format!(
+                "Git rev-parse task failed: {}",
+                e
+            ))),
+            Err(_) => {
+                self.save_git_timeout_checkpoint(&story_id, "git rev-parse");
+                Err(ExecutorError::GitTimeout(format!(
+                    "git rev-parse timed out after {:?}",
+                    git_timeout
+                )))
+            }
         }
-
-        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(hash)
         // _guard is dropped here, releasing the mutex lock
+    }
+
+    /// Save a checkpoint when a git operation times out.
+    ///
+    /// This captures the current execution state so the story can be resumed later.
+    /// Errors during checkpoint saving are logged but not propagated.
+    fn save_git_timeout_checkpoint(&self, story_id: &str, operation: &str) {
+        if let Some(ref manager) = self.checkpoint_manager {
+            // Get uncommitted files for checkpoint
+            let uncommitted_files = self.get_changed_files().unwrap_or_default();
+
+            let checkpoint = Checkpoint::new(
+                Some(StoryCheckpoint::new(
+                    story_id,
+                    1, // We don't track iteration in create_commit, use 1 as default
+                    self.config.max_iterations,
+                )),
+                PauseReason::Timeout,
+                uncommitted_files,
+            );
+
+            // Save checkpoint with error logging (best effort, but warn on failure)
+            if let Err(e) = manager.save(&checkpoint) {
+                eprintln!(
+                    "Warning: Failed to save git timeout checkpoint for story '{}' during {}: {}",
+                    story_id, operation, e
+                );
+            }
+        }
     }
 
     /// Update the PRD file to set passes: true for the story
