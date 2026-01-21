@@ -1231,7 +1231,8 @@ impl ParallelRunner {
                                     *total_iterations += exec_result.iterations_used;
                                     // Record metrics and evidence
                                     let attempts = exec_result.iterations_used.max(1);
-                                    run_metrics.complete_step(story_id, true, attempts, duration, None);
+                                    run_metrics
+                                        .complete_step(story_id, true, attempts, duration, None);
                                     emit_step_event(
                                         evidence,
                                         run_metrics,
