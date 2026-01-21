@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ralphmacchio::audit;
+use ralphmacchio::budget::TokenBudgetConfig;
 use ralphmacchio::checkpoint::{CheckpointManager, PauseReason};
 use ralphmacchio::logging::{init_logging, LoggingConfig};
 use ralphmacchio::mcp::RalphMcpServer;
@@ -151,6 +152,27 @@ struct Cli {
     #[arg(long, value_name = "COUNT")]
     circuit_breaker_threshold: Option<u32>,
 
+    // Token budget settings
+    /// Enable token budget tracking and enforcement
+    #[arg(long)]
+    budget: bool,
+
+    /// Maximum tokens per story (0 = unlimited)
+    #[arg(long, value_name = "TOKENS", default_value = "100000")]
+    budget_per_story: u64,
+
+    /// Maximum total tokens across all stories (0 = unlimited)
+    #[arg(long, value_name = "TOKENS", default_value = "1000000")]
+    budget_total: u64,
+
+    /// Maximum cost in dollars (0 = unlimited)
+    #[arg(long, value_name = "DOLLARS")]
+    budget_max_cost: Option<f64>,
+
+    /// Use conservative budget settings (stricter limits, more warnings)
+    #[arg(long)]
+    budget_conservative: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -229,6 +251,27 @@ enum Commands {
         /// When reached, execution pauses to prevent cascading failures. (default: 5)
         #[arg(long, value_name = "COUNT")]
         circuit_breaker_threshold: Option<u32>,
+
+        // Token budget settings
+        /// Enable token budget tracking and enforcement
+        #[arg(long)]
+        budget: bool,
+
+        /// Maximum tokens per story (0 = unlimited)
+        #[arg(long, value_name = "TOKENS", default_value = "100000")]
+        budget_per_story: u64,
+
+        /// Maximum total tokens across all stories (0 = unlimited)
+        #[arg(long, value_name = "TOKENS", default_value = "1000000")]
+        budget_total: u64,
+
+        /// Maximum cost in dollars (0 = unlimited)
+        #[arg(long, value_name = "DOLLARS")]
+        budget_max_cost: Option<f64>,
+
+        /// Use conservative budget settings (stricter limits, more warnings)
+        #[arg(long)]
+        budget_conservative: bool,
 
         /// Print help information
         #[arg(long, short)]
@@ -409,6 +452,11 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             startup_grace_period,
             no_checkpoint,
             circuit_breaker_threshold,
+            budget,
+            budget_per_story,
+            budget_total,
+            budget_max_cost,
+            budget_conservative,
             help: false,
         }) => {
             run_stories(
@@ -429,6 +477,11 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 no_checkpoint,
                 circuit_breaker_threshold,
                 agent.clone(),
+                budget,
+                budget_per_story,
+                budget_total,
+                budget_max_cost,
+                budget_conservative,
             )
             .await?;
         }
@@ -574,6 +627,11 @@ async fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cli.no_checkpoint,
                     cli.circuit_breaker_threshold,
                     cli.agent.clone(),
+                    cli.budget,
+                    cli.budget_per_story,
+                    cli.budget_total,
+                    cli.budget_max_cost,
+                    cli.budget_conservative,
                 )
                 .await?;
             } else {
@@ -634,6 +692,11 @@ async fn run_stories(
     no_checkpoint: bool,
     circuit_breaker_threshold: Option<u32>,
     agent: Option<String>,
+    budget_enabled: bool,
+    budget_per_story: u64,
+    budget_total: u64,
+    budget_max_cost: Option<f64>,
+    budget_conservative: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ralphmacchio::mcp::tools::executor::detect_agent;
     use ralphmacchio::parallel::scheduler::ParallelRunnerConfig;
@@ -682,6 +745,24 @@ async fn run_stories(
         (resume, no_resume)
     };
 
+    // Build budget configuration if enabled
+    let budget_config = if budget_enabled {
+        let base_config = if budget_conservative {
+            TokenBudgetConfig::conservative()
+        } else {
+            TokenBudgetConfig::new()
+        };
+
+        Some(
+            base_config
+                .with_story_budget(budget_per_story)
+                .with_total_budget(budget_total)
+                .with_max_cost(budget_max_cost.unwrap_or(0.0) * 100.0) // Convert dollars to cents
+        )
+    } else {
+        None
+    };
+
     let config = RunnerConfig {
         prd_path: if prd.is_absolute() {
             prd
@@ -703,6 +784,7 @@ async fn run_stories(
         startup_grace_period_seconds: startup_grace_period,
         no_checkpoint,
         circuit_breaker_threshold,
+        budget_config,
     };
 
     let runner = Runner::new(config);

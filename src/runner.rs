@@ -8,6 +8,7 @@ use tokio::sync::watch;
 
 use chrono::Utc;
 
+use crate::budget::TokenBudgetConfig;
 use crate::checkpoint::{Checkpoint, CheckpointManager, PauseReason, StoryCheckpoint};
 use crate::error::classification::ErrorCategory;
 use crate::evidence::{error_category_label, generate_run_id, EvidenceWriter};
@@ -68,6 +69,8 @@ pub struct RunnerConfig {
     pub no_checkpoint: bool,
     /// Number of consecutive failures before circuit breaker triggers (None = use default of 5)
     pub circuit_breaker_threshold: Option<u32>,
+    /// Token budget configuration (None = no budget enforcement)
+    pub budget_config: Option<TokenBudgetConfig>,
 }
 
 impl Default for RunnerConfig {
@@ -89,6 +92,7 @@ impl Default for RunnerConfig {
             startup_grace_period_seconds: None,
             no_checkpoint: false,
             circuit_breaker_threshold: None,
+            budget_config: None,
         }
     }
 }
@@ -467,6 +471,7 @@ impl Runner {
                         max_iterations: remaining_iterations,
                         git_mutex: None, // Sequential execution doesn't need mutex
                         timeout_config: self.build_timeout_config(),
+                        budget_config: self.config.budget_config.clone(),
                         ..Default::default()
                     };
 
