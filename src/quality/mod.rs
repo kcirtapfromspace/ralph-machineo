@@ -10,7 +10,10 @@ pub mod profiles;
 #[allow(unused_imports)]
 pub use blog_generator::{slugify, BlogContext, BlogGenerator, BlogGeneratorError, BlogResult};
 #[allow(unused_imports)]
-pub use gates::{GateProgressState, GateProgressUpdate, GateResult, QualityGateChecker};
+pub use gates::{
+    FailureCategory, GateFailureDetail, GateProgressState, GateProgressUpdate, GateResult,
+    QualityGateChecker,
+};
 #[allow(unused_imports)]
 pub use profiles::{
     AuditConfig, AuditSections, BlogConfig, CiConfig, DocumentationConfig, Profile, ProfileLevel,
