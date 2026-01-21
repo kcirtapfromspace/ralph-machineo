@@ -24,6 +24,7 @@ use crate::iteration::{
 };
 use crate::metrics::MetricsCollector;
 use crate::timeout::{HeartbeatEvent, HeartbeatMonitor, TimeoutConfig};
+use crate::ui::DisplayCallback;
 
 use crate::mcp::tools::load_prd::{PrdFile, PrdUserStory};
 use crate::quality::{GateResult, Profile, QualityGateChecker};
@@ -160,6 +161,8 @@ impl Default for ExecutorConfig {
 pub struct StoryExecutor {
     config: ExecutorConfig,
     checkpoint_manager: Option<CheckpointManager>,
+    /// Optional callback for streaming agent output to the display
+    display_callback: Option<Arc<dyn DisplayCallback>>,
 }
 
 impl StoryExecutor {
@@ -170,6 +173,7 @@ impl StoryExecutor {
         Self {
             config,
             checkpoint_manager,
+            display_callback: None,
         }
     }
 
@@ -181,7 +185,22 @@ impl StoryExecutor {
         Self {
             config,
             checkpoint_manager,
+            display_callback: None,
         }
+    }
+
+    /// Set a display callback for receiving real-time agent output.
+    ///
+    /// The callback will be invoked for each line of stdout/stderr from the agent process,
+    /// allowing the UI to display streaming output to the user.
+    pub fn with_display_callback(mut self, callback: Arc<dyn DisplayCallback>) -> Self {
+        self.display_callback = Some(callback);
+        self
+    }
+
+    /// Set the display callback on an existing executor.
+    pub fn set_display_callback(&mut self, callback: Arc<dyn DisplayCallback>) {
+        self.display_callback = Some(callback);
     }
 
     /// Continue execution of a story with user-provided steering guidance.
