@@ -207,11 +207,12 @@ impl Runner {
         display.set_shared_activity(shared_activity.clone());
 
         // Create streaming callback for real-time agent output
-        let streaming_callback = std::sync::Arc::new(StreamingDisplayCallback::with_shared_activity(
-            display.toggle_state(),
-            &self.config.display_options,
-            shared_activity,
-        ));
+        let streaming_callback =
+            std::sync::Arc::new(StreamingDisplayCallback::with_shared_activity(
+                display.toggle_state(),
+                &self.config.display_options,
+                shared_activity,
+            ));
 
         let mut evidence = match EvidenceWriter::try_new(&self.config.working_dir, run_id.clone()) {
             Ok(mut writer) => {

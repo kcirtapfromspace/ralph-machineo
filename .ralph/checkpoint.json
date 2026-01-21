@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "created_at": "2026-01-21T06:31:45.586981Z",
+  "created_at": "2026-01-21T07:27:30.450822Z",
   "current_story": {
-    "story_id": "US-009",
+    "story_id": "US-010",
     "iteration": 1,
     "max_iterations": 10
   },
@@ -10,6 +10,8 @@
   "uncommitted_files": [
     "ralph/checkpoint.json",
     "ralph/evidence/runs/run-1768976804491-2323/events.jsonl",
-    "ralph/evidence/runs/run-1768976804491-2323/run.json"
+    "ralph/evidence/runs/run-1768976804491-2323/run.json",
+    ".ralph/evidence/runs/run-1768980450418-77124/",
+    ".ralph/runs/run-1768976804491-2323.json"
   ]
 }

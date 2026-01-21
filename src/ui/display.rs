@@ -235,7 +235,12 @@ impl DisplayCallback for StreamingDisplayCallback {
             // Print with timestamp if verbose
             if self.verbosity >= 1 {
                 let now = chrono::Local::now();
-                println!("{} {}{}", self.style_dim(&format!("[{}]", now.format("%H:%M:%S"))), prefix, line);
+                println!(
+                    "{} {}{}",
+                    self.style_dim(&format!("[{}]", now.format("%H:%M:%S"))),
+                    prefix,
+                    line
+                );
             } else {
                 println!("{}{}", prefix, line);
             }

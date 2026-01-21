@@ -1781,10 +1781,7 @@ impl QualityGateChecker {
 
         let doc_url = format!("https://rustsec.org/advisories/{}.html", id);
 
-        let message = format!(
-            "{}: {} (crate: {} v{})",
-            id, title, crate_name, version
-        );
+        let message = format!("{}: {} (crate: {} v{})", id, title, crate_name, version);
 
         let suggestion = format!(
             "Update {} to a patched version or find an alternative crate",
@@ -1811,7 +1808,12 @@ impl QualityGateChecker {
 
         for (i, failure) in failures.iter().enumerate() {
             let error_code = failure.error_code.as_deref().unwrap_or("Unknown");
-            summary.push_str(&format!("{}. {} - {}\n", i + 1, error_code, failure.message));
+            summary.push_str(&format!(
+                "{}. {} - {}\n",
+                i + 1,
+                error_code,
+                failure.message
+            ));
 
             if let Some(ref url) = failure.doc_url {
                 summary.push_str(&format!("   Advisory: {}\n", url));
@@ -2782,7 +2784,11 @@ error: critical issue
             Some("https://rustsec.org/advisories/RUSTSEC-2021-0001.html".to_string())
         );
         assert!(result[0].suggestion.is_some());
-        assert!(result[0].suggestion.as_ref().unwrap().contains("test-crate"));
+        assert!(result[0]
+            .suggestion
+            .as_ref()
+            .unwrap()
+            .contains("test-crate"));
 
         // Second vulnerability
         assert_eq!(result[1].category, FailureCategory::Security);
@@ -2851,11 +2857,11 @@ error: critical issue
 
     #[test]
     fn test_format_audit_summary_single() {
-        let failures = vec![GateFailureDetail::new(
-            FailureCategory::Security,
-            "RUSTSEC-2023-0001: Issue",
-        )
-        .with_error_code("RUSTSEC-2023-0001")];
+        let failures =
+            vec![
+                GateFailureDetail::new(FailureCategory::Security, "RUSTSEC-2023-0001: Issue")
+                    .with_error_code("RUSTSEC-2023-0001"),
+            ];
 
         let summary = QualityGateChecker::format_audit_summary(&failures);
         assert!(summary.contains("1 vulnerability found")); // singular
