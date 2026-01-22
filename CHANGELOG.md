@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.3.1](https://github.com/kcirtapfromspace/ralph-machineo/compare/ralphmacchio-v0.3.0...ralphmacchio-v0.3.1) (2026-01-22)
+
+
+### Features
+
+* Add token budget system with actual usage parsing from Claude/OpenAI APIs ([38f8362](https://github.com/kcirtapfromspace/ralph-machineo/commit/38f836257da487a617ca3ab7613d5af36a33f5db))
+* Add UX observability for agent execution ([#6](https://github.com/kcirtapfromspace/ralph-machineo/issues/6)) ([b16f25d](https://github.com/kcirtapfromspace/ralph-machineo/commit/b16f25d993658d285d5c9eb9a6461d985292cd9a))
+* emit codex json output ([f5160a5](https://github.com/kcirtapfromspace/ralph-machineo/commit/f5160a5db04d2d38e556a233bf2c592f13e5996a))
+* emit codex json output ([5efeaaa](https://github.com/kcirtapfromspace/ralph-machineo/commit/5efeaaa226b00a920c0417d43509b98844d3f6f3))
+* enable codex full autonomy ([8f8047c](https://github.com/kcirtapfromspace/ralph-machineo/commit/8f8047ca084ac5832c0160828dedd9cb1e34a3ee))
+* enable codex full autonomy ([36c35a2](https://github.com/kcirtapfromspace/ralph-machineo/commit/36c35a2724b6ebc4b5e518f3ab8da8b823989d5f))
+* gate codex dangerous mode ([e49b888](https://github.com/kcirtapfromspace/ralph-machineo/commit/e49b8889565b4bccfa5d5e730051cc4b558b6cf5))
+* gate codex dangerous mode ([3512310](https://github.com/kcirtapfromspace/ralph-machineo/commit/351231054c8fc4afc06afe8d05d0a48fdbd8ca4b))
+* parse codex json output ([910ef43](https://github.com/kcirtapfromspace/ralph-machineo/commit/910ef43a0f41de24295904bda08d398fc7097727))
+* parse codex json output ([e6261b4](https://github.com/kcirtapfromspace/ralph-machineo/commit/e6261b45fe3dfa36228dada65c2684d722933180))
+* US-001 - Record run lifecycle evidence ([1e278bb](https://github.com/kcirtapfromspace/ralph-machineo/commit/1e278bb386d51c54214f1209a25c673cae77df74))
+* US-002 - Capture PRD success metrics ([ef721ee](https://github.com/kcirtapfromspace/ralph-machineo/commit/ef721ee6484779064a15ffcd508052a4f6c0de06))
+* US-003 - Persist evidence with retention rules ([300aae9](https://github.com/kcirtapfromspace/ralph-machineo/commit/300aae95e9f82fd669ccec7b1b36d50bc8d9830c))
+* US-004 - Provide export hooks for downstream processing ([931d1a8](https://github.com/kcirtapfromspace/ralph-machineo/commit/931d1a811fa7438b4abc288b4b5447001e504c89))
+* US-005 - Detect and label incomplete work ([29125e0](https://github.com/kcirtapfromspace/ralph-machineo/commit/29125e06d4e45658cac7962ec2fdbc65124e2199))
+* Wire budget-aware prompt building into executor ([8ddabbe](https://github.com/kcirtapfromspace/ralph-machineo/commit/8ddabbe623b04cba8de158efe8259ed275f5af12))
+
+
+### Bug Fixes
+
+* add startup grace period to prevent false stall detection ([1229ae1](https://github.com/kcirtapfromspace/ralph-machineo/commit/1229ae14a695d2d81bc39d0aa315b9c3853de4a4))
+* add startup grace period to prevent false stall detection during agent initialization ([d28fa44](https://github.com/kcirtapfromspace/ralph-machineo/commit/d28fa44dbd77ccb387c2cfc0825465d9e26e52b1))
+* ensure evidence emission during reconciliation and fix test ([acfd784](https://github.com/kcirtapfromspace/ralph-machineo/commit/acfd7848d669722aaebb65b8533492628daa8158))
+* exclude checkpoint from dirty list ([5b55805](https://github.com/kcirtapfromspace/ralph-machineo/commit/5b558053be329c89de748d0c7aaa8c4891c0870b))
+* parse codex json stderr ([41ebf04](https://github.com/kcirtapfromspace/ralph-machineo/commit/41ebf040974bb068162f4cc59b9e5e479e960c79))
+* sync version to 0.3.0 and fix release-please config ([a09ddfe](https://github.com/kcirtapfromspace/ralph-machineo/commit/a09ddfe627280040032d808b98486facdeb75724))
+
+
+### Documentation
+
+* Add checkpoint state management review and analysis ([94b63ba](https://github.com/kcirtapfromspace/ralph-machineo/commit/94b63bafe32d9a6f6eb4ed1fcc49e1fb3668b4c7))
+* update Homebrew install to tap ([fda3356](https://github.com/kcirtapfromspace/ralph-machineo/commit/fda3356daff867d1c4755f6578c840706cf019a7))
+
 ## [0.3.0](https://github.com/kcirtapfromspace/ralph/compare/v0.2.0...v0.3.0) (2026-01-19)
 
 
