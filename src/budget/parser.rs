@@ -92,6 +92,7 @@ struct OpenAIUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
     #[serde(default)]
+    #[allow(dead_code)] // Present in API response, used for deserialization
     total_tokens: u64,
 }
 
